@@ -1,0 +1,151 @@
+name: Release
+
+# Manual, controlled release: you trigger it from the Actions tab
+# (Run workflow → enter the version). It bumps the version in the
+# manifests, tags the commit, builds installers for macOS (universal),
+# Linux and Windows, and attaches them to a GitHub Release.
+#
+# Installers only for now — update artifacts are not signed/published,
+# so the in-app auto-updater is not fed by this workflow yet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 0.2.0 (no leading v)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the GitHub release as a pre-release"
+        required: false
+        default: false
+        type: boolean
+      draft:
+        description: "Create as a draft so you can review before publishing"
+        required: false
+        default: true
+        type: boolean
+
+# Needed to push the version-bump commit + tag and to create the release.
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Bump version & tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate version & tag
+        id: version
+        run: |
+          VERSION="${{ inputs.version }}"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$'; then
+            echo "::error::'$VERSION' is not valid semver (expected X.Y.Z)"
+            exit 1
+          fi
+          TAG="v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::Tag $TAG already exists"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version in manifests
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # package.json (+ package-lock.json)
+          npm version "$VERSION" --no-git-tag-version --allow-same-version
+          # tauri.conf.json (authoritative app/installer version)
+          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > src-tauri/tauri.conf.json.tmp
+          mv src-tauri/tauri.conf.json.tmp src-tauri/tauri.conf.json
+          # Cargo.toml — first (package) version line only
+          awk -v v="$VERSION" '!d && /^version = / {sub(/"[^"]*"/, "\"" v "\""); d=1} {print}' src-tauri/Cargo.toml > src-tauri/Cargo.toml.tmp
+          mv src-tauri/Cargo.toml.tmp src-tauri/Cargo.toml
+          # Cargo.lock — the line right after the tauri-app package entry
+          sed -i '/name = "tauri-app"/{n;s/^version = ".*"/version = "'"$VERSION"'"/;}' src-tauri/Cargo.lock
+
+      - name: Commit & tag
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -am "chore(release): ${{ steps.version.outputs.tag }}"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "Rune ${{ steps.version.outputs.version }}"
+          git push origin HEAD
+          git push origin "${{ steps.version.outputs.tag }}"
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+            rust-targets: "aarch64-apple-darwin,x86_64-apple-darwin"
+          - platform: ubuntu-latest
+            args: ""
+            rust-targets: ""
+          - platform: windows-latest
+            args: ""
+            rust-targets: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      # Check out the freshly-tagged commit so binaries report the new version.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            build-essential \
+            file \
+            libssl-dev
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build app & publish release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ needs.prepare.outputs.tag }}
+          releaseName: "Rune ${{ needs.prepare.outputs.version }}"
+          releaseBody: "Download the installer for your platform below."
+          releaseDraft: ${{ inputs.draft }}
+          prerelease: ${{ inputs.prerelease }}
+          args: ${{ matrix.args }}
