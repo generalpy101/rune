@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
+// `OnceLock` is only used by the Unix-only shell-integration shims below.
+#[cfg(unix)]
+use std::sync::OnceLock;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
@@ -433,9 +436,19 @@ pub fn pty_busy(id: u32, state: State<'_, PtyManager>) -> bool {
     let Some(session) = sessions.get(&id) else {
         return false;
     };
-    match (session.master.process_group_leader(), session.pid) {
-        (Some(fg), Some(pid)) => fg as i64 != pid as i64,
-        _ => false,
+    // `process_group_leader` (tcgetpgrp) is Unix-only in portable-pty; Windows
+    // has no equivalent, so we conservatively report "not busy" there.
+    #[cfg(unix)]
+    {
+        match (session.master.process_group_leader(), session.pid) {
+            (Some(fg), Some(pid)) => fg as i64 != pid as i64,
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = &session;
+        false
     }
 }
 
