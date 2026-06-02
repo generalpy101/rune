@@ -76,13 +76,18 @@ jobs:
           # Cargo.lock — the line right after the tauri-app package entry
           sed -i '/name = "tauri-app"/{n;s/^version = ".*"/version = "'"$VERSION"'"/;}' src-tauri/Cargo.lock
 
-      - name: Commit & tag
+      - name: Tag the release
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -am "chore(release): ${{ steps.version.outputs.tag }}"
+          # `main` is a protected branch (PR-only), so we never push the bump
+          # commit to it. We commit the version bump locally so the *tag* points
+          # at correctly-versioned manifests, then push ONLY the tag. The built
+          # binaries report the right version; main's manifest is left untouched.
+          if ! git diff --quiet; then
+            git commit -am "chore(release): ${{ steps.version.outputs.tag }}"
+          fi
           git tag -a "${{ steps.version.outputs.tag }}" -m "Rune ${{ steps.version.outputs.version }}"
-          git push origin HEAD
           git push origin "${{ steps.version.outputs.tag }}"
 
   build:
