@@ -152,6 +152,29 @@ PS1=\"${PS1}\\[\\033]133;B\\007\\]\"
     .clone()
 }
 
+/// The user's default shell program. Prefer `$SHELL`, then common fallbacks.
+///
+/// We resolve this to an explicit path instead of using
+/// `CommandBuilder::new_default_prog()` because portable-pty PANICS if any args
+/// are later added to a default-prog builder ("attempted to add args to a
+/// default_prog builder"). The bash shell-integration path adds `--rcfile`, so
+/// on Unix the builder must always carry an explicit program. (Running `$SHELL`
+/// with no args is equivalent to portable-pty's default-prog behaviour.)
+#[cfg(unix)]
+fn default_shell() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            for p in ["/bin/zsh", "/bin/bash", "/bin/sh"] {
+                if std::path::Path::new(p).exists() {
+                    return p.to_string();
+                }
+            }
+            "/bin/sh".to_string()
+        })
+}
+
 /// Optional overrides for what a terminal runs, from a saved profile. When
 /// absent everywhere, the user's default login shell is used.
 #[derive(Deserialize, Default)]
@@ -221,6 +244,13 @@ pub fn pty_spawn(
             }
             c
         }
+        // On Unix, resolve the default shell to an explicit program: the bash
+        // integration below adds `--rcfile`, and portable-pty panics if args are
+        // added to a `new_default_prog` builder. On Windows keep the default
+        // program (cmd.exe); the arg-adding path is Unix-only.
+        #[cfg(unix)]
+        _ => CommandBuilder::new(default_shell()),
+        #[cfg(not(unix))]
         _ => CommandBuilder::new_default_prog(),
     };
 
