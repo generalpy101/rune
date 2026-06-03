@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TerminalPane, type TerminalHandle } from "./components/TerminalPane";
 import { FileBrowser } from "./components/FileBrowser";
-import { FilePreview } from "./components/FilePreview";
+import {
+  EditorArea,
+  itemKey,
+  type EditorItem,
+  type EditorAreaHandle,
+} from "./components/EditorArea";
+import { confirmDialog, alertDialog } from "./lib/dialogs";
 import { SettingsModal } from "./components/SettingsModal";
 import { QuickOpen } from "./components/QuickOpen";
 import { CommandPalette, type Command } from "./components/CommandPalette";
@@ -38,6 +44,8 @@ import {
   IconChevronDown,
   IconSidebar,
   IconBroadcast,
+  IconSplitRight,
+  IconSplitDown,
 } from "./lib/icons";
 import { loadAiConfig, saveAiConfig, type AiConfig } from "./lib/ai/config";
 import {
@@ -84,9 +92,58 @@ export default function App() {
 
   const [home, setHome] = useState<string | null>(null);
   const [root, setRoot] = useState<string | null>(() => initial?.root ?? null);
-  const [preview, setPreview] = useState<string | null>(
-    () => initial?.preview ?? null,
-  );
+  const [openItems, setOpenItems] = useState<EditorItem[]>(() => {
+    if (initial?.openItems?.length) return initial.openItems;
+    if (initial?.preview) return [{ kind: "file", path: initial.preview }];
+    return [];
+  });
+  const [activeKey, setActiveKey] = useState<string | null>(() => {
+    if (initial?.activeKey) return initial.activeKey;
+    if (initial?.openItems?.length) return itemKey(initial.openItems[0]);
+    if (initial?.preview) return `file:${initial.preview}`;
+    return null;
+  });
+  const openItemsRef = useRef(openItems);
+  openItemsRef.current = openItems;
+  const activeKeyRef = useRef(activeKey);
+  activeKeyRef.current = activeKey;
+  // Bumped after a save to refresh git status (file-browser badges).
+  const [gitNonce, setGitNonce] = useState(0);
+  const editorRef = useRef<EditorAreaHandle>(null);
+
+  const openFile = useCallback((path: string) => {
+    const key = `file:${path}`;
+    setOpenItems((its) =>
+      its.some((i) => itemKey(i) === key)
+        ? its
+        : [...its, { kind: "file", path }],
+    );
+    setActiveKey(key);
+  }, []);
+
+  const openDiff = useCallback((path: string) => {
+    const key = `diff:${path}`;
+    setOpenItems((its) =>
+      its.some((i) => itemKey(i) === key)
+        ? its
+        : [...its, { kind: "diff", path }],
+    );
+    setActiveKey(key);
+  }, []);
+
+  const closeItem = useCallback((key: string) => {
+    const its = openItemsRef.current;
+    const idx = its.findIndex((i) => itemKey(i) === key);
+    if (idx === -1) return;
+    const next = its.filter((i) => itemKey(i) !== key);
+    setOpenItems(next);
+    if (activeKeyRef.current === key) {
+      setActiveKey(
+        next.length ? itemKey(next[Math.min(idx, next.length - 1)]) : null,
+      );
+    }
+  }, []);
+
   const [leftWidth, setLeftWidth] = useState(() => initial?.leftWidth ?? 280);
   const [sidebarOpen, setSidebarOpen] = useState(
     () => initial?.sidebarOpen ?? true,
@@ -208,11 +265,11 @@ export default function App() {
 
   // True if confirmation says it's OK to close panes `ids` (none busy, or the
   // user accepted the prompt). Honors the confirmCloseRunning setting.
-  const okToClose = (ids: number[]): boolean => {
+  const okToClose = async (ids: number[]): Promise<boolean> => {
     if (!settingsRef.current.confirmCloseRunning) return true;
     const busy = ids.some((id) => handles.current.get(id)?.isBusy());
     if (!busy) return true;
-    return window.confirm(
+    return confirmDialog(
       "A command is still running. Close anyway and terminate it?",
     );
   };
@@ -289,10 +346,10 @@ export default function App() {
     if (host.themeId) setSettings((s) => ({ ...s, theme: host.themeId! }));
   }, []);
 
-  const closeTab = useCallback((id: number) => {
+  const closeTab = useCallback(async (id: number) => {
     const tab = tabsRef.current.find((t) => t.id === id);
     if (tab) {
-      if (!okToClose(leafIds(tab.layout))) return;
+      if (!(await okToClose(leafIds(tab.layout)))) return;
       // Remember it so ⌘⇧T can bring it back where it left off.
       const cwds = leafIds(tab.layout)
         .map((lid) => [lid, paneCwd.current.get(lid)] as [number, string | undefined])
@@ -384,14 +441,14 @@ export default function App() {
   // Close a specific pane; closes the whole tab when it's the last pane. The
   // pane belongs to the active tab (only active-tab panes are interactable).
   const closePane = useCallback(
-    (paneId: number) => {
+    async (paneId: number) => {
       const tab = tabsRef.current.find((t) => t.id === activeTabRef.current);
       if (!tab) return;
       if (leafIds(tab.layout).length <= 1) {
-        closeTab(tab.id);
+        await closeTab(tab.id);
         return;
       }
-      if (!okToClose([paneId])) return;
+      if (!(await okToClose([paneId]))) return;
       const newLayout = removeLeaf(tab.layout, paneId);
       if (!newLayout) return;
       const remaining = leafIds(newLayout);
@@ -404,10 +461,9 @@ export default function App() {
   );
 
   // Close the focused pane (⌘W).
-  const closeFocused = useCallback(
-    () => closePane(focusedPaneRef.current),
-    [closePane],
-  );
+  const closeFocused = useCallback(() => {
+    void closePane(focusedPaneRef.current);
+  }, [closePane]);
 
   const applyRatio = useCallback((sid: number, ratio: number) => {
     setTabs((prev) =>
@@ -483,12 +539,12 @@ export default function App() {
 
   // Delete a workspace and close all its terminals (unmounting kills the PTYs).
   // The last remaining workspace can't be deleted.
-  const deleteWorkspace = useCallback((id: number) => {
+  const deleteWorkspace = useCallback(async (id: number) => {
     if (workspacesRef.current.length <= 1) return;
     const victimPanes = tabsRef.current
       .filter((t) => t.ws === id)
       .flatMap((t) => leafIds(t.layout));
-    if (!okToClose(victimPanes)) return;
+    if (!(await okToClose(victimPanes))) return;
     const remaining = workspacesRef.current.filter((w) => w.id !== id);
     setTabs((prev) => prev.filter((t) => t.ws !== id));
     setWorkspaces(remaining);
@@ -557,20 +613,20 @@ export default function App() {
     try {
       const info = await checkUpdate();
       if (!info.available) {
-        window.alert("You're on the latest version.");
+        await alertDialog("You're on the latest version.");
         return;
       }
-      const go = window.confirm(
+      const go = await confirmDialog(
         `Update ${info.version ?? ""} is available.${
           info.notes ? `\n\n${info.notes}` : ""
         }\n\nDownload and install now?`,
       );
       if (go) {
         await installUpdate();
-        window.alert("Update installed. Please restart Rune.");
+        await alertDialog("Update installed. Please restart Rune.");
       }
     } catch (e) {
-      window.alert(`Update check failed: ${e}`);
+      await alertDialog(`Update check failed: ${e}`);
     }
   }, []);
 
@@ -635,7 +691,8 @@ export default function App() {
       focusedPane,
       leftWidth,
       root,
-      preview,
+      openItems,
+      activeKey,
       sidebarOpen,
       workspaces,
       activeWs,
@@ -650,7 +707,8 @@ export default function App() {
     focusedPane,
     leftWidth,
     root,
-    preview,
+    openItems,
+    activeKey,
     sidebarOpen,
     workspaces,
     activeWs,
@@ -689,6 +747,8 @@ export default function App() {
 
   // Global keyboard shortcuts.
   useEffect(() => {
+    const editorHasFocus = () =>
+      !!document.activeElement?.closest(".editor-area");
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey) return;
       // ⌘⌥ + arrows: cycle tabs (←/→) or focus another pane (↑/↓).
@@ -739,9 +799,22 @@ export default function App() {
       } else if (e.key === "t") {
         e.preventDefault();
         newTab();
+      } else if (e.code === "BracketRight" && e.shiftKey && editorHasFocus()) {
+        // ⌘⇧]: next editor tab.
+        e.preventDefault();
+        editorRef.current?.nextTab();
+      } else if (e.code === "BracketLeft" && e.shiftKey && editorHasFocus()) {
+        // ⌘⇧[: previous editor tab.
+        e.preventDefault();
+        editorRef.current?.prevTab();
       } else if (e.key === "w") {
         e.preventDefault();
-        closeFocused();
+        // ⌘W closes the focused editor tab when editing, else the pane.
+        if (editorHasFocus() && openItemsRef.current.length > 0) {
+          editorRef.current?.closeActive();
+        } else {
+          closeFocused();
+        }
       } else if (e.key === "d") {
         e.preventDefault();
         splitFocused(e.shiftKey ? "col" : "row");
@@ -765,13 +838,18 @@ export default function App() {
         e.preventDefault();
         setQuickOpen(true);
       } else if (e.key >= "1" && e.key <= "9") {
-        // ⌘1-9 selects the Nth tab within the current workspace.
+        // ⌘1-9 selects the Nth editor tab when editing, else the Nth terminal
+        // tab within the current workspace.
         e.preventDefault();
         const idx = Number(e.key) - 1;
-        const wsTabs = tabsRef.current.filter(
-          (t) => t.ws === activeWsRef.current,
-        );
-        if (wsTabs[idx]) selectTab(wsTabs[idx].id);
+        if (editorHasFocus() && openItemsRef.current[idx]) {
+          setActiveKey(itemKey(openItemsRef.current[idx]));
+        } else {
+          const wsTabs = tabsRef.current.filter(
+            (t) => t.ws === activeWsRef.current,
+          );
+          if (wsTabs[idx]) selectTab(wsTabs[idx].id);
+        }
       }
     };
     window.addEventListener("keydown", onKey, { capture: true });
@@ -887,6 +965,15 @@ export default function App() {
       run: () => splitFocused("col"),
     },
     { id: "close", label: "Close Pane", hint: "⌘W", run: closeFocused },
+    ...(activeKey?.startsWith("file:")
+      ? [
+          {
+            id: "view-diff",
+            label: "View Diff (vs HEAD)",
+            run: () => openDiff(activeKey.slice("file:".length)),
+          },
+        ]
+      : []),
     {
       id: "reopen-tab",
       label: "Reopen Closed Tab",
@@ -1229,6 +1316,20 @@ export default function App() {
           </button>
           <button
             className="icon-btn"
+            title="Split pane right (⌘D)"
+            onClick={() => splitFocused("row")}
+          >
+            <IconSplitRight size={16} />
+          </button>
+          <button
+            className="icon-btn"
+            title="Split pane down (⌘⇧D)"
+            onClick={() => splitFocused("col")}
+          >
+            <IconSplitDown size={16} />
+          </button>
+          <button
+            className="icon-btn"
             title="Command palette (⌘⇧P)"
             onClick={() => setPalette(true)}
           >
@@ -1264,7 +1365,9 @@ export default function App() {
               <FileBrowser
                 rootPath={root}
                 onNavigateRoot={navigateRoot}
-                onOpenFile={setPreview}
+                onOpenFile={openFile}
+                onDiff={openDiff}
+                refreshKey={gitNonce}
                 onCdHere={(p) =>
                   activeHandle()?.sendText(`cd ${shellQuote(p)}\n`)
                 }
@@ -1292,8 +1395,22 @@ export default function App() {
           </>
         )}
         <main className="content">
-          {preview && (
-            <FilePreview path={preview} onClose={() => setPreview(null)} />
+          {openItems.length > 0 && (
+            <EditorArea
+              ref={editorRef}
+              items={openItems}
+              activeKey={activeKey}
+              settings={settings}
+              onActivate={setActiveKey}
+              onClose={closeItem}
+              onReveal={(p) => {
+                const d = p.slice(0, p.lastIndexOf("/")) || "/";
+                navigateRoot(d);
+                setSidebarOpen(true);
+              }}
+              onDiff={openDiff}
+              onSaved={() => setGitNonce((n) => n + 1)}
+            />
           )}
           {search.open && (
             <div className="search-bar">
@@ -1355,7 +1472,14 @@ export default function App() {
                     return (
                       <div
                         key={id}
-                        className="pane"
+                        className={`pane${
+                          leaves.length > 1 &&
+                          tabActive &&
+                          !zoom &&
+                          id === focusedPane
+                            ? " focused"
+                            : ""
+                        }`}
                         style={{
                           left: `${r.x * 100}%`,
                           top: `${r.y * 100}%`,
@@ -1376,7 +1500,7 @@ export default function App() {
                             if (id === focusedPane) setRoot(c);
                           }}
                           onFocusRequest={() => setFocusedPane(id)}
-                          onOpenPath={setPreview}
+                          onOpenPath={openFile}
                           onResize={(rows, cols) => {
                             if (id === focusedPane) setDims({ rows, cols });
                           }}
@@ -1505,7 +1629,7 @@ export default function App() {
       {quickOpen && (
         <QuickOpen
           root={root}
-          onOpen={setPreview}
+          onOpen={openFile}
           onClose={() => setQuickOpen(false)}
         />
       )}

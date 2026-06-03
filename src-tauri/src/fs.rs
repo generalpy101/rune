@@ -169,6 +169,51 @@ pub fn git_branch(path: String) -> Option<String> {
     }
 }
 
+/// Contents of `path` as committed at HEAD, for diffing the working tree
+/// against the last commit. Returns an empty string when the file is new /
+/// untracked (no HEAD version), and an error only when `path` isn't inside a
+/// git repository.
+#[tauri::command]
+pub fn git_file_head(path: String) -> Result<String, String> {
+    let dir = Path::new(&path)
+        .parent()
+        .ok_or_else(|| "path has no parent directory".to_string())?;
+
+    let top_out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !top_out.status.success() {
+        return Err("not a git repository".to_string());
+    }
+    let top = String::from_utf8_lossy(&top_out.stdout).trim().to_string();
+
+    // Path relative to the repo root, with canonicalization so symlinked
+    // roots (e.g. /tmp on macOS) still match.
+    let canon = fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    let top_canon = fs::canonicalize(&top).map_err(|e| e.to_string())?;
+    let rel = canon
+        .strip_prefix(&top_canon)
+        .map_err(|_| "file is not inside the repository".to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
+
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&top)
+        .arg("show")
+        .arg(format!("HEAD:{}", rel))
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        // No HEAD version (new/untracked file): diff against empty.
+        return Ok(String::new());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Show a native OS notification (used for "notify when a long command
 /// finishes" while the window is unfocused). Best-effort; failures are ignored.
 #[tauri::command]

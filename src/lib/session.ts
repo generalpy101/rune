@@ -33,13 +33,24 @@ export interface PersistedTab {
   ws?: number;
 }
 
+/** One open editor tab: a file being edited or a diff being viewed. */
+export interface PersistedEditorItem {
+  kind: "file" | "diff";
+  path: string;
+}
+
 export interface PersistedSession {
   tabs: PersistedTab[];
   activeTab: number;
   focusedPane: number;
   leftWidth: number;
   root: string;
-  preview: string | null;
+  /** @deprecated single open file; replaced by `openItems`. Read for migration. */
+  preview?: string | null;
+  /** Open editor tabs (files + diffs). */
+  openItems?: PersistedEditorItem[];
+  /** Key (`kind:path`) of the active editor tab. */
+  activeKey?: string | null;
   /** Whether the file-browser sidebar is shown (undefined = shown). */
   sidebarOpen?: boolean;
   /** pane id -> last known cwd */

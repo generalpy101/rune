@@ -695,6 +695,17 @@ button:hover {
   position: absolute;
   overflow: hidden;
 }
+/* Focus ring around the active pane when a tab is split (VS Code style). */
+.pane.focused::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1.5px solid var(--accent);
+  border-radius: 3px;
+  opacity: 0.55;
+  z-index: 4;
+}
 .pane-close {
   position: absolute;
   top: 4px;
@@ -729,6 +740,7 @@ button:hover {
   position: absolute;
   z-index: 5;
   background: var(--border);
+  transition: background 0.12s ease;
 }
 .pane-divider-v {
   width: 4px;
@@ -745,26 +757,187 @@ button:hover {
   background: var(--accent);
 }
 
-/* ---- File preview ---- */
-.file-preview {
+/* ---- Editor area (tabs over a stack of files / diffs) ---- */
+.editor-area {
   flex: 0 0 45%;
   display: flex;
   flex-direction: column;
   border-bottom: 1px solid var(--border);
   min-height: 0;
 }
+.editor-tabs {
+  display: flex;
+  align-items: stretch;
+  overflow-x: auto;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  scrollbar-width: none;
+}
+.editor-tabs::-webkit-scrollbar {
+  display: none;
+}
+.editor-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 200px;
+  padding: 5px 8px 5px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  border-top: 2px solid transparent;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.editor-tab:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+.editor-tab.active {
+  color: var(--text);
+  background: var(--panel);
+  border-top-color: var(--accent);
+}
+.editor-tab .et-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.editor-tab .et-dirty {
+  color: var(--accent);
+}
+.editor-tab .et-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.editor-tab:hover .et-close,
+.editor-tab.active .et-close {
+  opacity: 0.75;
+}
+.editor-tab .et-close:hover {
+  opacity: 1;
+  color: var(--text);
+  background: var(--panel-3);
+}
+.editor-stack {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.editor-slot {
+  position: absolute;
+  inset: 0;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* ---- File preview ---- */
+.file-preview {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 .fp-header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding: 4px 10px;
   background: var(--panel-2);
   border-bottom: 1px solid var(--border);
+}
+.fp-spacer {
+  flex: 1;
 }
 .fp-name {
   flex: 1;
   font-size: 12px;
   color: var(--muted);
+}
+.fp-tool,
+.fp-save {
+  padding: 3px 9px;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--panel-3);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.12s ease, opacity 0.12s ease;
+}
+.fp-tool:hover,
+.fp-save:not(:disabled):hover {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+.fp-save:disabled,
+.fp-tool:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.fp-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.fp-close:hover {
+  color: var(--text);
+  background: var(--danger);
+}
+/* Segmented Split / Inline toggle in the diff header. */
+.seg {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+}
+.seg button {
+  padding: 3px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel-3);
+  border: none;
+  cursor: pointer;
+}
+.seg button.active {
+  color: var(--accent-fg);
+  background: var(--accent);
+}
+.diff-host {
+  height: 100%;
+  overflow: hidden;
+}
+.diff-host .cm-mergeView,
+.diff-host .cm-mergeViewEditors {
+  height: 100%;
+}
+.diff-host .cm-editor {
+  height: 100%;
 }
 .fp-body {
   flex: 1;
@@ -773,10 +946,6 @@ button:hover {
 }
 .fp-body .cm-editor {
   height: 100%;
-  font-size: 12px;
-}
-.fp-body .cm-scroller {
-  font-family: Menlo, "JetBrains Mono", monospace;
 }
 .fp-body .cm-content,
 .fp-body .cm-line {
@@ -789,6 +958,20 @@ button:hover {
 .fp-ro {
   color: var(--muted);
   font-size: 11px;
+}
+.fp-status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 2px 10px;
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border-top: 1px solid var(--border);
+}
+.fp-status .fp-auto {
+  margin-left: auto;
+  color: var(--accent);
 }
 .fp-error {
   padding: 12px;
@@ -1039,8 +1222,11 @@ button:hover {
 }
 .settings-body {
   overflow-y: auto;
-  padding: 12px 2px 4px;
+  /* Right padding + a stable gutter so the scrollbar never overlaps the
+     right-aligned controls (checkboxes / number inputs). */
+  padding: 12px 12px 4px 2px;
   min-height: 200px;
+  scrollbar-gutter: stable;
 }
 
 .theme-editor {

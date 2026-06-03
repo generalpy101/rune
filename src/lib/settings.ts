@@ -33,6 +33,12 @@ export interface Settings {
   sshHosts: SshHost[];
   /** Inject the `rt` shell function so meta commands work from the terminal. */
   shellIntegration: boolean;
+  /** Auto-save the file editor after edits stop (debounced). */
+  autosave: boolean;
+  /** Debounce delay (ms) before an autosave fires. */
+  autosaveDelayMs: number;
+  /** On save, trim trailing whitespace and ensure a single final newline. */
+  tidyOnSave: boolean;
 }
 
 /** A saved command the user can re-run from the palette. */
@@ -365,6 +371,9 @@ export const DEFAULT_SETTINGS: Settings = {
   snippets: [],
   sshHosts: [],
   shellIntegration: true,
+  autosave: false,
+  autosaveDelayMs: 1000,
+  tidyOnSave: false,
 };
 
 const KEY = "rustterm.settings";

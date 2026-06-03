@@ -35,6 +35,7 @@ pub fn run() {
             fs::reveal_in_finder,
             fs::git_status,
             fs::git_branch,
+            fs::git_file_head,
             fs::notify,
             fs::walk_dir,
             ai::ai_chat,

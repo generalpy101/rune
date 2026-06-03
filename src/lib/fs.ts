@@ -52,5 +52,10 @@ export const gitStatus = (path: string) =>
 export const gitBranch = (path: string) =>
   invoke<string | null>("git_branch", { path });
 
+/** Contents of `path` at HEAD (for diffing). Empty string for new/untracked
+ *  files; rejects when the path isn't inside a git repository. */
+export const gitFileHead = (path: string) =>
+  invoke<string>("git_file_head", { path });
+
 export const notify = (title: string, body: string) =>
   invoke("notify", { title, body });
