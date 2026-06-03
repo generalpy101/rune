@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   listDir,
   createFile,
@@ -41,6 +41,7 @@ interface FileOps {
   bookmarks: string[];
   onToggleBookmark: (path: string) => void;
   showHidden: boolean;
+  onDiff: (path: string) => void;
 }
 
 function basename(p: string): string {
@@ -87,6 +88,10 @@ interface Props {
   bookmarks: string[];
   /** Add or remove `path` from the bookmarks list. */
   onToggleBookmark: (path: string) => void;
+  /** Open a diff (working tree vs HEAD) for `path` in the editor. */
+  onDiff: (path: string) => void;
+  /** Bump to force an immediate refresh (e.g. after an editor save). */
+  refreshKey?: number;
 }
 
 function dirname(p: string): string {
@@ -121,6 +126,8 @@ export function FileBrowser({
   showHidden,
   bookmarks,
   onToggleBookmark,
+  onDiff,
+  refreshKey,
 }: Props) {
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -170,6 +177,7 @@ export function FileBrowser({
     bookmarks,
     onToggleBookmark,
     showHidden,
+    onDiff,
   };
 
   const reload = useCallback(() => {
@@ -197,6 +205,17 @@ export function FileBrowser({
       window.removeEventListener("focus", onFocus);
     };
   }, [reload]);
+
+  // Immediate refresh when something external bumps refreshKey (e.g. a save in
+  // the editor), so git badges update without waiting for the poll.
+  const didMountRefresh = useRef(false);
+  useEffect(() => {
+    if (!didMountRefresh.current) {
+      didMountRefresh.current = true;
+      return;
+    }
+    reload();
+  }, [refreshKey, reload]);
 
   const newAtRoot = async (isDir: boolean) => {
     const name = await promptDialog(
@@ -488,6 +507,13 @@ function TreeNode({
       });
     } else {
       items.push({ label: "Open", onClick: () => onOpenFile(entry.path) });
+      const status = git[entry.path];
+      if (status && status !== "untracked") {
+        items.push({
+          label: "View Diff (vs HEAD)",
+          onClick: () => ops.onDiff(entry.path),
+        });
+      }
     }
     items.push({
       label: "Copy",

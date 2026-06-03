@@ -260,6 +260,48 @@ function GeneralSection({
           onChange={(e) => set("showHidden", e.target.checked)}
         />
       </label>
+
+      <div className="theme-group-title">Editor</div>
+
+      <label className="setting-row">
+        <span>Autosave</span>
+        <input
+          type="checkbox"
+          checked={settings.autosave}
+          onChange={(e) => set("autosave", e.target.checked)}
+        />
+      </label>
+
+      <label className="setting-row">
+        <span>Autosave delay (ms)</span>
+        <input
+          type="number"
+          min={200}
+          max={10000}
+          step={100}
+          disabled={!settings.autosave}
+          value={settings.autosaveDelayMs}
+          onChange={(e) =>
+            set(
+              "autosaveDelayMs",
+              Number(e.target.value) || settings.autosaveDelayMs,
+            )
+          }
+        />
+      </label>
+      <label className="setting-row">
+        <span>Tidy on save (trim whitespace, final newline)</span>
+        <input
+          type="checkbox"
+          checked={settings.tidyOnSave}
+          onChange={(e) => set("tidyOnSave", e.target.checked)}
+        />
+      </label>
+      <p className="ai-hint">
+        Saves the open file automatically a short while after you stop typing
+        (and on blur / when you switch files). The editor also follows your
+        theme and font, and shows the cursor position &amp; language below.
+      </p>
     </>
   );
 }
