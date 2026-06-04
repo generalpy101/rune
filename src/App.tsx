@@ -46,6 +46,8 @@ import {
   IconBroadcast,
   IconSplitRight,
   IconSplitDown,
+  IconZen,
+  IconZenExit,
 } from "./lib/icons";
 import { loadAiConfig, saveAiConfig, type AiConfig } from "./lib/ai/config";
 import {
@@ -152,6 +154,9 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [quickOpen, setQuickOpen] = useState(false);
   const [palette, setPalette] = useState(false);
+  // Zen mode: hide all chrome (top bar, sidebar, status bar) for a
+  // distraction-free terminal. Transient — not persisted across restarts.
+  const [zen, setZen] = useState(false);
   const [aiConfig, setAiConfig] = useState<AiConfig>(loadAiConfig);
   const [showAi, setShowAi] = useState(false);
   const [showAiSettings, setShowAiSettings] = useState(false);
@@ -831,6 +836,10 @@ export default function App() {
       } else if (e.key === "i") {
         e.preventDefault();
         setShowAi((v) => !v);
+      } else if (e.key === ".") {
+        // ⌘.: toggle zen mode (distraction-free terminal).
+        e.preventDefault();
+        setZen((v) => !v);
       } else if (e.key === "b") {
         e.preventDefault();
         setSidebarOpen((v) => !v);
@@ -1037,6 +1046,12 @@ export default function App() {
       run: () => setSidebarOpen((v) => !v),
     },
     {
+      id: "zen",
+      label: "Toggle Zen Mode",
+      hint: "⌘.",
+      run: () => setZen((v) => !v),
+    },
+    {
       id: "search",
       label: "Search Scrollback…",
       hint: "⌘F",
@@ -1096,31 +1111,12 @@ export default function App() {
       hint: sn.command.length > 32 ? sn.command.slice(0, 32) + "…" : sn.command,
       run: () => activeHandle()?.sendText(sn.command + "\n"),
     })),
-    {
-      id: "theme-mocha",
-      label: "Theme: Mocha (dark)",
-      run: () => setSettings((s) => ({ ...s, theme: "mocha" })),
-    },
-    {
-      id: "theme-latte",
-      label: "Theme: Latte (light)",
-      run: () => setSettings((s) => ({ ...s, theme: "latte" })),
-    },
-    {
-      id: "theme-dracula",
-      label: "Theme: Dracula",
-      run: () => setSettings((s) => ({ ...s, theme: "dracula" })),
-    },
-    {
-      id: "theme-tokyo",
-      label: "Theme: Tokyo Night",
-      run: () => setSettings((s) => ({ ...s, theme: "tokyo" })),
-    },
-    {
-      id: "theme-nord",
-      label: "Theme: Nord",
-      run: () => setSettings((s) => ({ ...s, theme: "nord" })),
-    },
+    // Built-in + user-defined themes (kept in sync via themeOptions).
+    ...themeOptions(settings).map((o) => ({
+      id: `theme-${o.id}`,
+      label: `Theme: ${o.label}`,
+      run: () => setSettings((s) => ({ ...s, theme: o.id })),
+    })),
   ];
 
   if (home === null || root === null) {
@@ -1128,7 +1124,17 @@ export default function App() {
   }
 
   return (
-    <div className="app">
+    <div className={`app${zen ? " zen" : ""}`}>
+      {zen && (
+        <button
+          className="zen-exit"
+          title="Exit zen mode (⌘.)"
+          onClick={() => setZen(false)}
+        >
+          <IconZenExit size={14} />
+          <span>Exit Zen</span>
+        </button>
+      )}
       <div className="topbar">
         <div className="tabs">
           <div className="ws-strip">
@@ -1327,6 +1333,13 @@ export default function App() {
             onClick={() => splitFocused("col")}
           >
             <IconSplitDown size={16} />
+          </button>
+          <button
+            className="icon-btn"
+            title="Zen mode (⌘.)"
+            onClick={() => setZen(true)}
+          >
+            <IconZen size={16} />
           </button>
           <button
             className="icon-btn"
@@ -1596,7 +1609,7 @@ export default function App() {
             readTerminal={(lines) =>
               handles.current.get(focusedPane)?.getBuffer(lines) ?? null
             }
-            hidden={!showAi}
+            hidden={!showAi || zen}
             onClose={() => setShowAi(false)}
             onOpenSettings={() => setShowAiSettings(true)}
           />
