@@ -90,6 +90,37 @@ body {
   min-height: 0;
 }
 
+/* ---- Zen mode: hide all chrome, terminal fills the window ---- */
+.app.zen .topbar,
+.app.zen .sidebar,
+.app.zen .body > .divider,
+.app.zen .statusbar {
+  display: none;
+}
+.zen-exit {
+  position: fixed;
+  top: 10px;
+  right: 12px;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0.3;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.zen-exit:hover {
+  opacity: 1;
+  color: var(--text);
+  background: var(--panel-3);
+}
+
 /* ---- Top bar / tabs ---- */
 .topbar {
   display: flex;

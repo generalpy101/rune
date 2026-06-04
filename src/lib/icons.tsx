@@ -39,6 +39,8 @@ import {
   VscBroadcast,
   VscSplitHorizontal,
   VscSplitVertical,
+  VscScreenFull,
+  VscScreenNormal,
 } from "react-icons/vsc";
 
 export {
@@ -66,6 +68,8 @@ export {
   VscBroadcast as IconBroadcast,
   VscSplitHorizontal as IconSplitRight,
   VscSplitVertical as IconSplitDown,
+  VscScreenFull as IconZen,
+  VscScreenNormal as IconZenExit,
 };
 
 /** Per-tool glyph for AI tool-call cards. */
