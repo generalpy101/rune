@@ -97,6 +97,8 @@ interface WireRequest {
   max_tokens?: number;
   /** Per-turn id so the stream can be cancelled via `cancelChat`. */
   id: string;
+  /** Working directory — used by the `codex` kind to run `codex exec` there. */
+  cwd?: string;
 }
 
 /** Cancel an in-flight model stream (Stop). */
@@ -109,6 +111,7 @@ function toWire(
   messages: ChatMessage[],
   tools: ToolDef[],
   id: string,
+  cwd: string,
 ): WireRequest {
   return {
     kind: provider.kind,
@@ -117,6 +120,7 @@ function toWire(
     model: provider.model,
     system,
     id,
+    cwd,
     messages: messages.map((m) => ({
       role: m.role,
       content: m.content,
@@ -144,6 +148,7 @@ export function streamChat(
   tools: ToolDef[],
   onEvent: (ev: AiEvent) => void,
   streamId: string,
+  cwd: string,
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     const channel = new Channel<AiEvent>();
@@ -152,7 +157,7 @@ export function streamChat(
       if (ev.type === "done" || ev.type === "error") resolve();
     };
     invoke("ai_chat", {
-      req: toWire(provider, system, messages, tools, streamId),
+      req: toWire(provider, system, messages, tools, streamId, cwd),
       onEvent: channel,
     }).catch(reject);
   });

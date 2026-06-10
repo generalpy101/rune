@@ -175,6 +175,67 @@ fn default_shell() -> String {
         })
 }
 
+/// How to launch an agent CLI (e.g. `codex`) in a terminal.
+#[derive(serde::Serialize)]
+pub struct AgentLaunch {
+    pub shell: String,
+    pub args: Vec<String>,
+}
+
+/// Resolve how to launch an agent CLI by name, using the user's real shell
+/// environment. GUI apps inherit a minimal PATH, and CLIs like Codex are
+/// usually installed via npm-global / Homebrew paths that aren't on it — so we
+/// run the command through the user's login+interactive shell (which sources
+/// their profile/rc and sets PATH, and lets the CLI pick up its own auth).
+/// Returns `None` when the command isn't found in that environment, so the UI
+/// can prompt the user to install it.
+#[tauri::command]
+pub fn agent_spawn(command: String) -> Option<AgentLaunch> {
+    // This name is interpolated into a shell command; allow only simple,
+    // safe command names so it can't break out of the `exec`.
+    if command.is_empty()
+        || !command
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+
+    #[cfg(unix)]
+    {
+        let shell = default_shell();
+        // Available in the user's login+interactive shell?
+        let found = std::process::Command::new(&shell)
+            .args(["-lic", &format!("command -v {} >/dev/null 2>&1", command)])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !found {
+            return None;
+        }
+        Some(AgentLaunch {
+            shell,
+            args: vec!["-lic".into(), format!("exec {}", command)],
+        })
+    }
+
+    #[cfg(not(unix))]
+    {
+        let found = std::process::Command::new("where")
+            .arg(&command)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !found {
+            return None;
+        }
+        Some(AgentLaunch {
+            shell: command,
+            args: Vec::new(),
+        })
+    }
+}
+
 /// Optional overrides for what a terminal runs, from a saved profile. When
 /// absent everywhere, the user's default login shell is used.
 #[derive(Deserialize, Default)]

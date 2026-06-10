@@ -212,12 +212,36 @@ export function useAgents(
   }, []);
 
   const makeCallbacks = useCallback(
-    (s: Session): AgentCallbacks => ({
-      onAssistantStart: () => {
+    (s: Session): AgentCallbacks => {
+      // Commit the current streamed bubble (store its text, or drop it if
+      // empty) and close the stream. The next onText opens a fresh bubble, so
+      // assistant text and tool cards interleave in chronological order.
+      const commitStream = () => {
+        const aid = s.streamingItemId;
+        const finalText = s.streamAccum;
+        s.streamAccum = "";
+        s.streamingItemId = null;
+        if (aid != null) {
+          s.items = finalText
+            ? s.items.map((it) =>
+                it.kind === "assistant" && it.id === aid
+                  ? { ...it, text: finalText }
+                  : it,
+              )
+            : s.items.filter(
+                (it) => !(it.kind === "assistant" && it.id === aid),
+              );
+        }
+      };
+      const openStream = () => {
         const aid = s.uid++;
         s.streamingItemId = aid;
         s.streamAccum = "";
         s.items = [...s.items, { kind: "assistant", id: aid, text: "" }];
+      };
+      return {
+      onAssistantStart: () => {
+        openStream();
         bump();
       },
       onNote: (from, text) => {
@@ -227,25 +251,17 @@ export function useAgents(
       onStream: (sid) => {
         s.liveStream = sid;
         if (sid === null) {
-          // Commit the streamed turn: store the final text (rendered as Markdown)
-          // or drop the bubble if it was empty (e.g. a tool-only turn).
-          const aid = s.streamingItemId;
-          const finalText = s.streamAccum;
-          s.streamAccum = "";
-          s.streamingItemId = null;
-          if (aid != null) {
-            s.items = finalText
-              ? s.items.map((it) =>
-                  it.kind === "assistant" && it.id === aid
-                    ? { ...it, text: finalText }
-                    : it,
-                )
-              : s.items.filter((it) => !(it.kind === "assistant" && it.id === aid));
-          }
+          commitStream();
           bump();
         }
       },
       onText: (delta) => {
+        // Resume into a fresh bubble if the previous one was closed by a tool
+        // card (so text after a tool renders below it, not appended above).
+        if (s.streamingItemId == null) {
+          openStream();
+          bump();
+        }
         s.streamAccum += delta;
         // Only the visible agent paints token-by-token; others accumulate quietly.
         if (s.id === selectedIdRef.current) streamSink.current?.(s.streamAccum);
@@ -280,6 +296,8 @@ export function useAgents(
         bump();
       },
       onToolCall: (call) => {
+        // Close any open text bubble so this card lands below it (chronological).
+        commitStream();
         if (call.name === "run_command" || call.name === "start_server")
           s.liveCommands.add(call.id);
         s.items = [...s.items, { kind: "tool", id: call.id, call }];
@@ -306,7 +324,8 @@ export function useAgents(
         s.items = [...s.items, { kind: "error", id: s.uid++, text: message }];
         bump();
       },
-    }),
+      };
+    },
     [bump],
   );
 

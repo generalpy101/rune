@@ -112,7 +112,17 @@ export function AISettings({ config, onChange, onClose }: Props) {
           </select>
         </label>
 
-        {provider && (
+        {provider && provider.kind === "codex" && (
+          <p className="ai-hint">
+            Codex runs the local <code>codex</code> CLI (<code>codex exec</code>)
+            and uses its own login — no API key, model, or URL needed. Install it
+            with <code>npm i -g @openai/codex</code> and run{" "}
+            <code>codex login</code> first, then type a task below — Codex works
+            in the current directory.
+          </p>
+        )}
+
+        {provider && provider.kind !== "codex" && (
           <>
             {!provider.preset && (
               <label className="setting-row">

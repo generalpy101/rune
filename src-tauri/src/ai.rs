@@ -88,6 +88,9 @@ pub struct ChatRequest {
     /// Per-turn id so the frontend can cancel this stream via `cancel_chat`.
     #[serde(default)]
     pub id: String,
+    /// Working directory. Used by the `codex` kind to run `codex exec` there.
+    #[serde(default)]
+    pub cwd: Option<String>,
 }
 
 /// Managed state: stream id → cancel sender. Lets `cancel_chat` abort an
@@ -135,6 +138,9 @@ where
 pub enum AiEvent {
     Text { value: String },
     ToolCall { id: String, name: String, arguments: String },
+    /// A finished tool call's result (used by the `codex` adapter, whose CLI
+    /// runs its own tools — we render them as cards without executing anything).
+    ToolResult { id: String, result: String },
     Done { finish: String },
     Error { message: String },
 }
@@ -204,6 +210,7 @@ pub async fn ai_chat(
 
     let result = match req.kind.as_str() {
         "anthropic" => stream_anthropic(&client, &req, &on_event, rx).await,
+        "codex" => stream_codex(&req, &on_event, rx).await,
         _ => stream_openai(&client, &req, &on_event, rx).await,
     };
 
@@ -225,6 +232,262 @@ pub fn cancel_chat(state: State<'_, ChatRegistry>, id: String) -> bool {
     } else {
         false
     }
+}
+
+// ---- Codex CLI adapter -----------------------------------------------------
+//
+// Unlike the HTTP adapters, this runs the local Codex CLI (`codex exec`) and
+// streams its stdout back as Text events. Codex does its own planning and tool
+// use and prints progress + result; we just surface that in the panel. It uses
+// the CLI's own login, so there's no API key. Each prompt is a fresh `codex
+// exec` run in the panel's working directory.
+
+/// Escape a string for safe use inside POSIX single quotes.
+fn sh_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// Keep the tail of long command output so a card's (collapsed) detail stays
+/// bounded.
+fn truncate_tail(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut cut = s.len() - max;
+    while cut < s.len() && !s.is_char_boundary(cut) {
+        cut += 1;
+    }
+    format!("…(truncated)…\n{}", &s[cut..])
+}
+
+/// Map a Codex `item` (command_execution / file_change) to a tool card's
+/// (name, JSON arguments, id). Other item kinds → None.
+fn codex_tool_meta(item: &Value) -> Option<(String, String, String)> {
+    let id = item
+        .get("id")
+        .and_then(|x| x.as_str())
+        .unwrap_or("codex")
+        .to_string();
+    match item.get("type").and_then(|x| x.as_str()).unwrap_or("") {
+        "command_execution" => {
+            let cmd = item.get("command").and_then(|x| x.as_str()).unwrap_or("");
+            Some(("run_command".into(), json!({ "command": cmd }).to_string(), id))
+        }
+        "file_change" => {
+            let names = item
+                .get("changes")
+                .and_then(|c| c.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|c| c.get("path").and_then(|p| p.as_str()))
+                        .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            Some(("edit_file".into(), json!({ "path": names }).to_string(), id))
+        }
+        _ => None,
+    }
+}
+
+/// The collapsed result detail shown when a Codex tool card is expanded.
+fn codex_tool_result(item: &Value, kind: &str) -> String {
+    match kind {
+        "command_execution" => {
+            let exit = item.get("exit_code").and_then(|x| x.as_i64()).unwrap_or(0);
+            let out = item
+                .get("aggregated_output")
+                .and_then(|x| x.as_str())
+                .or_else(|| item.get("output").and_then(|x| x.as_str()))
+                .unwrap_or("");
+            format!("exit code: {}\n{}", exit, truncate_tail(out, 8000))
+        }
+        "file_change" => item
+            .get("changes")
+            .and_then(|c| c.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|c| {
+                        let path = c.get("path").and_then(|p| p.as_str())?;
+                        let k = c.get("kind").and_then(|p| p.as_str()).unwrap_or("modify");
+                        Some(format!("{k}: {path}"))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_else(|| "(file change)".into()),
+        _ => String::new(),
+    }
+}
+
+/// Translate one line of Codex `--json` output into clean panel events. Noise
+/// (reasoning, deprecation/transient errors, lifecycle events) is dropped; an
+/// unparseable line falls back to plain text so nothing real is ever lost.
+fn emit_codex_line(
+    on_event: &Channel<AiEvent>,
+    line: &str,
+    started: &mut std::collections::HashSet<String>,
+) {
+    let v: Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(_) => {
+            let _ = on_event.send(AiEvent::Text {
+                value: format!("{line}\n"),
+            });
+            return;
+        }
+    };
+    match v.get("type").and_then(|x| x.as_str()).unwrap_or("") {
+        "turn.failed" => {
+            let msg = v
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("Codex run failed.");
+            let _ = on_event.send(AiEvent::Error {
+                message: msg.to_string(),
+            });
+        }
+        "item.started" => {
+            if let Some(item) = v.get("item") {
+                if let Some((name, args, id)) = codex_tool_meta(item) {
+                    let _ = on_event.send(AiEvent::ToolCall {
+                        id: id.clone(),
+                        name,
+                        arguments: args,
+                    });
+                    started.insert(id);
+                }
+            }
+        }
+        "item.completed" => {
+            if let Some(item) = v.get("item") {
+                let kind = item.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                if kind == "agent_message" {
+                    if let Some(t) = item.get("text").and_then(|x| x.as_str()) {
+                        if !t.is_empty() {
+                            let _ = on_event.send(AiEvent::Text {
+                                value: format!("{t}\n\n"),
+                            });
+                        }
+                    }
+                } else if let Some((name, args, id)) = codex_tool_meta(item) {
+                    if !started.contains(&id) {
+                        let _ = on_event.send(AiEvent::ToolCall {
+                            id: id.clone(),
+                            name,
+                            arguments: args,
+                        });
+                    }
+                    let _ = on_event.send(AiEvent::ToolResult {
+                        id,
+                        result: codex_tool_result(item, kind),
+                    });
+                }
+                // reasoning / error / other item kinds → dropped as noise.
+            }
+        }
+        // thread.started, turn.started, turn.completed, transient top-level
+        // "error" (e.g. "Reconnecting…") → ignored.
+        _ => {}
+    }
+}
+
+async fn stream_codex(
+    req: &ChatRequest,
+    on_event: &Channel<AiEvent>,
+    mut cancel: oneshot::Receiver<()>,
+) -> Result<(), String> {
+    // The latest user message is the task prompt.
+    let prompt = req
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .map(|m| m.content.trim().to_string())
+        .unwrap_or_default();
+    if prompt.is_empty() {
+        return Err("No prompt to send to Codex.".to_string());
+    }
+    let cwd = req
+        .cwd
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| std::env::var("HOME").ok())
+        .unwrap_or_else(|| ".".to_string());
+
+    // Run `codex exec --json <prompt>` through the user's login shell so its
+    // PATH and auth load. `--json` makes Codex emit structured JSONL events,
+    // which we map to clean assistant text + tool cards (instead of dumping its
+    // raw human-readable output). `--skip-git-repo-check` lets it run outside a
+    // git repo. The prompt is single-quoted so the shell can't interpret it.
+    let command = format!(
+        "NO_COLOR=1 codex exec --json --skip-git-repo-check {} 2>&1",
+        sh_single_quote(&prompt)
+    );
+
+    let mut child = shell_command(&command, &cwd).spawn().map_err(|e| {
+        format!("Failed to start codex: {e}. Is the Codex CLI installed? (npm i -g @openai/codex)")
+    })?;
+    let pid = child.id() as i32;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "codex produced no output stream".to_string())?;
+    // Drain (and discard) any shell-level stderr so it can't fill the pipe and
+    // block; codex's own stderr is already merged into stdout via `2>&1`.
+    if let Some(mut err) = child.stderr.take() {
+        std::thread::spawn(move || {
+            let mut b = [0u8; 4096];
+            while matches!(err.read(&mut b), Ok(n) if n > 0) {}
+        });
+    }
+
+    // Parse Codex's JSONL events line-by-line and map them to clean events;
+    // reap the child when the pipe closes.
+    let sink = on_event.clone();
+    let reader = tauri::async_runtime::spawn_blocking(move || {
+        use std::io::BufRead;
+        let mut started: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for line in std::io::BufReader::new(stdout).lines() {
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            let line = line.trim();
+            if !line.is_empty() {
+                emit_codex_line(&sink, line, &mut started);
+            }
+        }
+        let _ = child.wait();
+    });
+
+    // Race output draining against a Stop (cancel_chat) request.
+    let mut reader = reader;
+    let cancelled = tokio::select! {
+        biased;
+        _ = &mut cancel => true,
+        _ = &mut reader => false,
+    };
+    if cancelled {
+        kill_group(pid, false);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(2000));
+            kill_group(pid, true);
+        });
+        // Let the reader drain remaining output and reap the child.
+        let _ = reader.await;
+    }
+
+    let _ = on_event.send(AiEvent::Done {
+        finish: if cancelled {
+            "cancelled".to_string()
+        } else {
+            "stop".to_string()
+        },
+    });
+    Ok(())
 }
 
 // ---- OpenAI-compatible adapter --------------------------------------------

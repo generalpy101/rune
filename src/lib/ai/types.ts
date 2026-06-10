@@ -30,5 +30,6 @@ export interface ToolDef {
 export type AiEvent =
   | { type: "text"; value: string }
   | { type: "tool_call"; id: string; name: string; arguments: string }
+  | { type: "tool_result"; id: string; result: string }
   | { type: "done"; finish: string }
   | { type: "error"; message: string };

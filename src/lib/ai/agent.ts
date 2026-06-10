@@ -535,8 +535,12 @@ export async function runAgent(
           cb.onText(ev.value);
         } else if (ev.type === "tool_call") {
           const call = { id: ev.id, name: ev.name, arguments: ev.arguments };
-          toolCalls.push(call);
           cb.onToolCall(call);
+          // Codex runs its own tools — show the card, but never execute it
+          // ourselves (only queue tool calls we own for execution).
+          if (opts.provider.kind !== "codex") toolCalls.push(call);
+        } else if (ev.type === "tool_result") {
+          cb.onToolResult(ev.id, ev.result);
         } else if (ev.type === "done") {
           finish = ev.finish;
         } else if (ev.type === "error") {
@@ -545,6 +549,7 @@ export async function runAgent(
         }
       },
       sid,
+      opts.cwd,
     );
     cb.onStream?.(null);
     console.log(
