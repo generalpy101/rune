@@ -669,17 +669,32 @@ export default function App() {
         return;
       }
       const go = await confirmDialog(
-        `Update ${info.version ?? ""} is available.${
-          info.notes ? `\n\n${info.notes}` : ""
-        }\n\nDownload and install now?`,
+        `Update ${info.version ?? ""} is available. Download, install, and restart now?`,
       );
-      if (go) {
-        await installUpdate();
-        await alertDialog("Update installed. Please restart Rune.");
-      }
+      if (go) await installUpdate(); // relaunches into the new version on success
     } catch (e) {
       await alertDialog(`Update check failed: ${e}`);
     }
+  }, []);
+
+  // Auto-update: shortly after launch, quietly check for a newer release and
+  // offer to install it. Stays silent when up to date or offline so it never
+  // nags. Honors the "Check for updates on launch" setting.
+  useEffect(() => {
+    const t = window.setTimeout(async () => {
+      if (!settingsRef.current.autoUpdate) return;
+      try {
+        const info = await checkUpdate();
+        if (!info.available) return;
+        const go = await confirmDialog(
+          `Rune ${info.version ?? ""} is available. Install it now and restart?`,
+        );
+        if (go) await installUpdate(); // relaunches on success
+      } catch {
+        /* offline / no published release / signature issue — stay silent */
+      }
+    }, 4000);
+    return () => clearTimeout(t);
   }, []);
 
   // Clear the unread-activity marker for whichever tab becomes active.

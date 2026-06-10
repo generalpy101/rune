@@ -5,8 +5,9 @@ name: Release
 # manifests, tags the commit, builds installers for macOS (universal),
 # Linux and Windows, and attaches them to a GitHub Release.
 #
-# Installers only for now — update artifacts are not signed/published,
-# so the in-app auto-updater is not fed by this workflow yet.
+# Builds installers AND signed updater artifacts (latest.json + .sig), so the
+# in-app auto-updater is fed by each release. Requires the repo secrets
+# TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD (see below).
 
 on:
   workflow_dispatch:
@@ -147,6 +148,14 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Signing the updater bundles. When these are set (and
+          # bundle.createUpdaterArtifacts is true), tauri-action produces the
+          # `.sig` files + a `latest.json` manifest and uploads them to the
+          # release, which feeds the in-app auto-updater. Add these as repo
+          # secrets (from `npm run tauri signer generate`); the matching public
+          # key lives in tauri.conf.json → plugins.updater.pubkey.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ needs.prepare.outputs.tag }}
           releaseName: "Rune ${{ needs.prepare.outputs.version }}"

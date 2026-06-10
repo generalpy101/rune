@@ -39,6 +39,8 @@ export interface Settings {
   autosaveDelayMs: number;
   /** On save, trim trailing whitespace and ensure a single final newline. */
   tidyOnSave: boolean;
+  /** Check for app updates on launch and offer to install them. */
+  autoUpdate: boolean;
 }
 
 /** A saved command the user can re-run from the palette. */
@@ -374,6 +376,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autosave: false,
   autosaveDelayMs: 1000,
   tidyOnSave: false,
+  autoUpdate: true,
 };
 
 const KEY = "rustterm.settings";
