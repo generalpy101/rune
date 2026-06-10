@@ -123,6 +123,12 @@ fn osc133_bash_rcfile() -> Option<std::path::PathBuf> {
         let dir = std::env::temp_dir().join("rune-bash");
         std::fs::create_dir_all(&dir).ok()?;
         let rc = "\
+# This is a non-login interactive bash; also load the login profile so PATH set
+# there (e.g. Homebrew on macOS) is available, then the user's bashrc.
+for __rt_p in \"$HOME/.bash_profile\" \"$HOME/.bash_login\" \"$HOME/.profile\"; do
+  [ -f \"$__rt_p\" ] && { . \"$__rt_p\"; break; }
+done
+unset __rt_p
 [ -f ~/.bashrc ] && source ~/.bashrc
 
 # --- Rune OSC 133 command-block integration ---
@@ -305,12 +311,28 @@ pub fn pty_spawn(
             }
             c
         }
-        // On Unix, resolve the default shell to an explicit program: the bash
-        // integration below adds `--rcfile`, and portable-pty panics if args are
-        // added to a `new_default_prog` builder. On Windows keep the default
-        // program (cmd.exe); the arg-adding path is Unix-only.
+        // On Unix, resolve the default shell to an explicit program (portable-pty
+        // panics if args are added to a default-prog builder) and spawn it as a
+        // LOGIN shell, so it reads the user's profile (~/.zprofile,
+        // ~/.bash_profile) — that's where macOS Homebrew & friends put PATH, so a
+        // non-login shell leaves `brew` (and other profile PATH entries) missing.
+        // Exception: bash with shell-integration uses `--rcfile` (added below),
+        // which a *login* bash ignores — so it stays non-login and that rcfile
+        // sources the login profile itself.
         #[cfg(unix)]
-        _ => CommandBuilder::new(default_shell()),
+        _ => {
+            let shell = default_shell();
+            let base = std::path::Path::new(&shell)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_string();
+            let mut c = CommandBuilder::new(&shell);
+            if !(base == "bash" && integration.unwrap_or(false)) {
+                c.arg("-l");
+            }
+            c
+        }
         #[cfg(not(unix))]
         _ => CommandBuilder::new_default_prog(),
     };
