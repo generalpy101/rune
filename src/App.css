@@ -1487,6 +1487,11 @@ button:hover {
 .newtab-menu button:hover {
   background: var(--panel-3);
 }
+.newtab-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
 
 /* ---- AI settings modal ---- */
 .modal.ai-settings {

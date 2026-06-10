@@ -1,8 +1,10 @@
 /** AI configuration: provider presets, bring-your-own keys, and agent options.
  *  Persisted to localStorage. Keys live only on this machine. */
 
-/** Which wire adapter the Rust backend uses for a provider. */
-export type ProviderKind = "openai" | "anthropic";
+/** Which wire adapter the Rust backend uses for a provider. `codex` is special:
+ *  it doesn't talk to an HTTP API — it runs the local Codex CLI (`codex exec`)
+ *  under the hood and streams its output, using the CLI's own login/auth. */
+export type ProviderKind = "openai" | "anthropic" | "codex";
 
 export interface ProviderConfig {
   id: string;
@@ -52,6 +54,17 @@ export function presetProviders(): ProviderConfig[] {
       baseUrl: "https://api.anthropic.com/v1",
       apiKey: "",
       model: "claude-3-5-sonnet-latest",
+      preset: true,
+    },
+    {
+      // Runs the local Codex CLI via `codex exec` — uses the CLI's own login,
+      // so no API key/model/URL is needed. (`baseUrl: "local"` is just a marker.)
+      id: "codex",
+      label: "Codex CLI (local)",
+      kind: "codex",
+      baseUrl: "local",
+      apiKey: "",
+      model: "",
       preset: true,
     },
     {
@@ -131,6 +144,8 @@ export function aiReady(config: AiConfig): boolean {
   if (!config.enabled) return false;
   const p = activeProvider(config);
   if (!p) return false;
+  // Codex uses the local CLI's own auth — no API key/URL required.
+  if (p.kind === "codex") return true;
   const isLocal = /localhost|127\.0\.0\.1/.test(p.baseUrl);
   return isLocal || p.apiKey.trim().length > 0;
 }

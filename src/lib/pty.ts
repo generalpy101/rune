@@ -11,6 +11,17 @@ export interface SpawnProfile {
   env?: Record<string, string>;
 }
 
+/** How to launch an agent CLI (matches the Rust `AgentLaunch`). */
+export interface AgentLaunch {
+  shell: string;
+  args: string[];
+}
+
+/** Resolve how to launch an agent CLI (e.g. "codex") through the user's login
+ *  shell so its PATH/auth load. Resolves `null` when the CLI isn't installed. */
+export const agentSpawn = (command: string) =>
+  invoke<AgentLaunch | null>("agent_spawn", { command });
+
 /** Spawn a PTY running the user's shell (or a profile's). Returns the session id. */
 export async function spawnPty(
   rows: number,

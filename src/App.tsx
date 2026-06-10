@@ -31,6 +31,7 @@ import {
   type SshHost,
 } from "./lib/settings";
 import type { SpawnProfile } from "./lib/pty";
+import { agentSpawn } from "./lib/pty";
 import { runMeta } from "./lib/meta";
 import { getCurrentWindow, Effect } from "@tauri-apps/api/window";
 import {
@@ -88,6 +89,23 @@ interface Tab {
    *  (terminals keep running) but hidden. */
   ws: number;
 }
+
+/** Coding-agent CLIs that can be launched in a terminal. They run through the
+ *  user's own shell and use the CLI's own authentication — no API key needed.
+ *  Claude Code is intentionally omitted for now: Anthropic restricts
+ *  third-party programmatic access to Claude from 2026-06-15, so launching the
+ *  `claude` CLI on a user's behalf isn't permitted. Add it back here when that
+ *  changes — the launch flow is already agent-agnostic. */
+const AGENTS = [
+  {
+    id: "codex",
+    name: "Codex",
+    command: "codex",
+    install: "npm i -g @openai/codex   (then run: codex login)",
+  },
+] as const;
+
+type Agent = (typeof AGENTS)[number];
 
 export default function App() {
   const [initial] = useState(loadSession);
@@ -349,6 +367,35 @@ export default function App() {
     setActiveTab(tid);
     setFocusedPane(pid);
     if (host.themeId) setSettings((s) => ({ ...s, theme: host.themeId! }));
+  }, []);
+
+  // Open a new tab running a coding-agent CLI (e.g. Codex). The CLI is launched
+  // through the user's login shell (so its PATH/auth load) in the current pane's
+  // directory. If it isn't installed, prompt with install instructions.
+  const launchAgent = useCallback(async (agent: Agent) => {
+    const launch = await agentSpawn(agent.command).catch(() => null);
+    if (!launch) {
+      await alertDialog(
+        `${agent.name} CLI was not found on your PATH. Install it with: ${agent.install}`,
+      );
+      return;
+    }
+    const tid = nextId.current++;
+    const pid = nextId.current++;
+    const cwd = paneCwd.current.get(focusedPaneRef.current);
+    if (cwd) paneCwd.current.set(pid, cwd);
+    setTabs((t) => [
+      ...t,
+      {
+        id: tid,
+        ws: activeWsRef.current,
+        title: agent.name,
+        layout: leaf(pid),
+        spawn: { shell: launch.shell, args: launch.args },
+      },
+    ]);
+    setActiveTab(tid);
+    setFocusedPane(pid);
   }, []);
 
   const closeTab = useCallback(async (id: number) => {
@@ -961,6 +1008,13 @@ export default function App() {
       hint: h.user ? `${h.user}@${h.host}` : h.host,
       run: () => connectSsh(h),
     })),
+    ...AGENTS.map((a) => ({
+      id: `agent-${a.id}`,
+      label: `New ${a.name} Session`,
+      run: () => {
+        void launchAgent(a);
+      },
+    })),
     {
       id: "split-right",
       label: "Split Pane Right",
@@ -1259,46 +1313,56 @@ export default function App() {
           >
             <IconPlus size={15} />
           </button>
-          {settings.profiles.length > 0 && (
-            <div className="newtab-menu-wrap">
-              <button
-                className="icon-btn newtab-caret"
-                title="New tab with profile…"
-                onClick={() => setNewTabMenu((v) => !v)}
-              >
-                <IconChevronDown size={13} />
-              </button>
-              {newTabMenu && (
-                <>
-                  <div
-                    className="menu-backdrop"
-                    onClick={() => setNewTabMenu(false)}
-                  />
-                  <div className="newtab-menu">
+          <div className="newtab-menu-wrap">
+            <button
+              className="icon-btn newtab-caret"
+              title="New tab with profile or agent…"
+              onClick={() => setNewTabMenu((v) => !v)}
+            >
+              <IconChevronDown size={13} />
+            </button>
+            {newTabMenu && (
+              <>
+                <div
+                  className="menu-backdrop"
+                  onClick={() => setNewTabMenu(false)}
+                />
+                <div className="newtab-menu">
+                  <button
+                    onClick={() => {
+                      setNewTabMenu(false);
+                      newTab(null);
+                    }}
+                  >
+                    Default shell
+                  </button>
+                  {settings.profiles.map((p) => (
                     <button
+                      key={p.id}
                       onClick={() => {
                         setNewTabMenu(false);
-                        newTab(null);
+                        newTab(p.id);
                       }}
                     >
-                      Default shell
+                      {p.name}
                     </button>
-                    {settings.profiles.map((p) => (
-                      <button
-                        key={p.id}
-                        onClick={() => {
-                          setNewTabMenu(false);
-                          newTab(p.id);
-                        }}
-                      >
-                        {p.name}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-          )}
+                  ))}
+                  <div className="newtab-menu-sep" />
+                  {AGENTS.map((a) => (
+                    <button
+                      key={a.id}
+                      onClick={() => {
+                        setNewTabMenu(false);
+                        void launchAgent(a);
+                      }}
+                    >
+                      {a.name} session
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </div>
         <div className="topbar-actions">
           <button

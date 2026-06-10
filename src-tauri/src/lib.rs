@@ -21,6 +21,7 @@ pub fn run() {
             pty::pty_kill,
             pty::pty_cwd,
             pty::pty_busy,
+            pty::agent_spawn,
             fs::list_dir,
             fs::read_file,
             fs::write_file,
