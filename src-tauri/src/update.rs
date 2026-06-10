@@ -34,7 +34,8 @@ pub async fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
     }
 }
 
-/// Download and install the available update, then the app should be restarted.
+/// Download and install the available update, then relaunch into it. On
+/// success this never returns (the process restarts); errors surface to the UI.
 #[tauri::command]
 pub async fn install_update(app: AppHandle) -> Result<(), String> {
     let updater = app.updater().map_err(|e| e.to_string())?;
@@ -47,5 +48,7 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
         .download_and_install(|_chunk, _total| {}, || {})
         .await
         .map_err(|e| e.to_string())?;
-    Ok(())
+    // Restart into the freshly-installed version. `restart` exits the process,
+    // so nothing after this line runs.
+    app.restart();
 }

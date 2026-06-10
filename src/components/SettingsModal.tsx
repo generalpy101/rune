@@ -261,6 +261,15 @@ function GeneralSection({
         />
       </label>
 
+      <label className="setting-row">
+        <span>Check for updates on launch</span>
+        <input
+          type="checkbox"
+          checked={settings.autoUpdate}
+          onChange={(e) => set("autoUpdate", e.target.checked)}
+        />
+      </label>
+
       <div className="theme-group-title">Editor</div>
 
       <label className="setting-row">
