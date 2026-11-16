@@ -190,7 +190,10 @@ fn pid_names() -> std::collections::HashMap<i32, String> {
     use std::process::Command;
 
     let mut map = HashMap::new();
-    let Ok(out) = Command::new("tasklist").args(["/FO", "CSV", "/NH"]).output() else {
+    let Ok(out) = Command::new("tasklist")
+        .args(["/FO", "CSV", "/NH"])
+        .output()
+    else {
         return map;
     };
     let text = String::from_utf8_lossy(&out.stdout);

@@ -388,9 +388,7 @@ pub fn pty_spawn(
                         let user = std::env::var("ZDOTDIR")
                             .ok()
                             .filter(|s| !s.is_empty())
-                            .unwrap_or_else(|| {
-                                std::env::var("HOME").unwrap_or_default()
-                            });
+                            .unwrap_or_else(|| std::env::var("HOME").unwrap_or_default());
                         cmd.env("RT_USER_ZDOTDIR", user);
                         cmd.env("ZDOTDIR", zdir.display().to_string());
                     }

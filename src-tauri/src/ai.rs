@@ -12,10 +12,10 @@
 //! All HTTP happens in Rust (reqwest), so there are no CORS or webview-fetch
 //! limitations and token streaming is reliable.
 
+use crate::platform::{kill_group, shell_command};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use crate::platform::{kill_group, shell_command};
 use std::collections::HashMap;
 use std::io::Read;
 use std::sync::{Arc, Mutex};
@@ -136,13 +136,26 @@ where
 #[derive(Serialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AiEvent {
-    Text { value: String },
-    ToolCall { id: String, name: String, arguments: String },
+    Text {
+        value: String,
+    },
+    ToolCall {
+        id: String,
+        name: String,
+        arguments: String,
+    },
     /// A finished tool call's result (used by the `codex` adapter, whose CLI
     /// runs its own tools — we render them as cards without executing anything).
-    ToolResult { id: String, result: String },
-    Done { finish: String },
-    Error { message: String },
+    ToolResult {
+        id: String,
+        result: String,
+    },
+    Done {
+        finish: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Default, Clone)]
@@ -170,9 +183,7 @@ impl TextBatch {
     /// Append a delta; flush if the time or size budget is exceeded.
     fn push(&mut self, on_event: &Channel<AiEvent>, text: &str) {
         self.buf.push_str(text);
-        if self.last.elapsed().as_millis() >= TEXT_FLUSH_MS
-            || self.buf.len() >= TEXT_FLUSH_BYTES
-        {
+        if self.last.elapsed().as_millis() >= TEXT_FLUSH_MS || self.buf.len() >= TEXT_FLUSH_BYTES {
             self.flush(on_event);
         }
     }
@@ -260,6 +271,80 @@ fn truncate_tail(s: &str, max: usize) -> String {
     format!("…(truncated)…\n{}", &s[cut..])
 }
 
+fn unquote_shell_arg(s: &str) -> String {
+    let s = s.trim();
+    if s.len() >= 2 && s.starts_with('\'') && s.ends_with('\'') {
+        return s[1..s.len() - 1].replace("'\\''", "'");
+    }
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        return s[1..s.len() - 1]
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\")
+            .replace("\\$", "$")
+            .replace("\\`", "`");
+    }
+    s.to_string()
+}
+
+fn path_basename(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+fn is_unix_shell(shell: &str) -> bool {
+    matches!(
+        path_basename(shell),
+        "sh" | "bash" | "zsh" | "fish" | "dash" | "ksh"
+    )
+}
+
+fn is_windows_cmd(shell: &str) -> bool {
+    let name = path_basename(shell);
+    name.eq_ignore_ascii_case("cmd") || name.eq_ignore_ascii_case("cmd.exe")
+}
+
+fn strip_shell_wrapper(command: &str) -> String {
+    let command = command.trim();
+    let Some(shell_end) = command.find(|c: char| c.is_whitespace()) else {
+        return command.to_string();
+    };
+    let shell = unquote_shell_arg(&command[..shell_end]);
+    let rest = command[shell_end..].trim_start();
+    let Some(flag_end) = rest.find(|c: char| c.is_whitespace()) else {
+        return command.to_string();
+    };
+    let flag = &rest[..flag_end];
+    let inner = rest[flag_end..].trim_start();
+
+    if (is_unix_shell(&shell) && (flag == "-lc" || flag == "-c"))
+        || (is_windows_cmd(&shell) && flag.eq_ignore_ascii_case("/c"))
+    {
+        return unquote_shell_arg(inner);
+    }
+    command.to_string()
+}
+
+fn codex_command_display(item: &Value) -> String {
+    let Some(command) = item.get("command") else {
+        return String::new();
+    };
+    if let Some(command) = command.as_str() {
+        return strip_shell_wrapper(command);
+    }
+    let Some(argv) = command.as_array() else {
+        return String::new();
+    };
+    let parts: Vec<&str> = argv.iter().filter_map(|v| v.as_str()).collect();
+    match parts.as_slice() {
+        [shell, flag, inner] if is_unix_shell(shell) && (*flag == "-lc" || *flag == "-c") => {
+            (*inner).to_string()
+        }
+        [shell, flag, inner] if is_windows_cmd(shell) && flag.eq_ignore_ascii_case("/c") => {
+            (*inner).to_string()
+        }
+        _ => parts.join(" "),
+    }
+}
+
 /// Map a Codex `item` (command_execution / file_change) to a tool card's
 /// (name, JSON arguments, id). Other item kinds → None.
 fn codex_tool_meta(item: &Value) -> Option<(String, String, String)> {
@@ -270,8 +355,12 @@ fn codex_tool_meta(item: &Value) -> Option<(String, String, String)> {
         .to_string();
     match item.get("type").and_then(|x| x.as_str()).unwrap_or("") {
         "command_execution" => {
-            let cmd = item.get("command").and_then(|x| x.as_str()).unwrap_or("");
-            Some(("run_command".into(), json!({ "command": cmd }).to_string(), id))
+            let cmd = codex_command_display(item);
+            Some((
+                "run_command".into(),
+                json!({ "command": cmd }).to_string(),
+                id,
+            ))
         }
         "file_change" => {
             let names = item
@@ -280,7 +369,7 @@ fn codex_tool_meta(item: &Value) -> Option<(String, String, String)> {
                 .map(|arr| {
                     arr.iter()
                         .filter_map(|c| c.get("path").and_then(|p| p.as_str()))
-                        .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+                        .map(ToString::to_string)
                         .collect::<Vec<_>>()
                         .join(", ")
                 })
@@ -288,6 +377,79 @@ fn codex_tool_meta(item: &Value) -> Option<(String, String, String)> {
             Some(("edit_file".into(), json!({ "path": names }).to_string(), id))
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_file_change_uses_full_paths() {
+        let item = json!({
+            "id": "call-1",
+            "type": "file_change",
+            "changes": [
+                { "kind": "update", "path": "src/components/AIPanel.tsx" },
+                { "kind": "create", "path": "src-tauri/src/ai.rs" }
+            ]
+        });
+
+        let (_, args, _) = codex_tool_meta(&item).expect("tool metadata");
+        assert_eq!(
+            args,
+            json!({ "path": "src/components/AIPanel.tsx, src-tauri/src/ai.rs" }).to_string()
+        );
+    }
+
+    #[test]
+    fn codex_command_display_strips_shell_wrapper() {
+        let item = json!({
+            "type": "command_execution",
+            "command": "/bin/zsh -lc 'cargo test --lib'"
+        });
+
+        assert_eq!(codex_command_display(&item), "cargo test --lib");
+    }
+
+    #[test]
+    fn codex_command_display_handles_argv_wrapper() {
+        let item = json!({
+            "type": "command_execution",
+            "command": ["/bin/bash", "-lc", "npm run build"]
+        });
+
+        assert_eq!(codex_command_display(&item), "npm run build");
+    }
+
+    #[test]
+    fn codex_command_display_handles_shell_paths_and_double_quotes() {
+        let item = json!({
+            "type": "command_execution",
+            "command": "/opt/homebrew/bin/bash -lc \"npm run build\""
+        });
+
+        assert_eq!(codex_command_display(&item), "npm run build");
+    }
+
+    #[test]
+    fn codex_command_display_handles_cmd_path_and_case() {
+        let item = json!({
+            "type": "command_execution",
+            "command": r"C:\Windows\System32\cmd.exe /c dir src"
+        });
+
+        assert_eq!(codex_command_display(&item), "dir src");
+    }
+
+    #[test]
+    fn codex_command_display_leaves_plain_commands_alone() {
+        let item = json!({
+            "type": "command_execution",
+            "command": "cargo test --lib"
+        });
+
+        assert_eq!(codex_command_display(&item), "cargo test --lib");
     }
 }
 
@@ -587,7 +749,9 @@ async fn stream_openai(
             StreamStep::End => break 'outer,
             StreamStep::Cancelled => {
                 batch.flush(on_event);
-                let _ = on_event.send(AiEvent::Done { finish: "stop".into() });
+                let _ = on_event.send(AiEvent::Done {
+                    finish: "stop".into(),
+                });
                 return Ok(());
             }
             StreamStep::Err(e) => return Err(e),
@@ -756,7 +920,9 @@ async fn stream_anthropic(
             StreamStep::End => break 'outer,
             StreamStep::Cancelled => {
                 batch.flush(on_event);
-                let _ = on_event.send(AiEvent::Done { finish: "stop".into() });
+                let _ = on_event.send(AiEvent::Done {
+                    finish: "stop".into(),
+                });
                 return Ok(());
             }
             StreamStep::Err(e) => return Err(e),
@@ -827,7 +993,11 @@ fn emit_tools_and_done(on_event: &Channel<AiEvent>, tools: Vec<ToolAcc>, finish:
         let _ = on_event.send(AiEvent::ToolCall {
             id: t.id,
             name: t.name,
-            arguments: if t.args.is_empty() { "{}".into() } else { t.args },
+            arguments: if t.args.is_empty() {
+                "{}".into()
+            } else {
+                t.args
+            },
         });
     }
     let finish = if had_tools && finish == "stop" {
@@ -1131,7 +1301,11 @@ pub async fn run_background(
 
         let running = reg.lock().unwrap().contains_key(&id);
         let output = log.lock().unwrap().clone();
-        Ok(BackgroundOutput { id, output, running })
+        Ok(BackgroundOutput {
+            id,
+            output,
+            running,
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1150,9 +1324,17 @@ pub fn command_output(state: State<'_, CommandRegistry>, id: String) -> Backgrou
                 .as_ref()
                 .map(|l| l.lock().unwrap().clone())
                 .unwrap_or_default();
-            BackgroundOutput { id, output, running: true }
+            BackgroundOutput {
+                id,
+                output,
+                running: true,
+            }
         }
-        None => BackgroundOutput { id, output: String::new(), running: false },
+        None => BackgroundOutput {
+            id,
+            output: String::new(),
+            running: false,
+        },
     }
 }
 

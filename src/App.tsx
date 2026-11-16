@@ -7,7 +7,7 @@ import {
   type EditorItem,
   type EditorAreaHandle,
 } from "./components/EditorArea";
-import { confirmDialog, alertDialog } from "./lib/dialogs";
+import { confirmDialog, alertDialog, optionDialog } from "./lib/dialogs";
 import { SettingsModal } from "./components/SettingsModal";
 import { QuickOpen } from "./components/QuickOpen";
 import { CommandPalette, type Command } from "./components/CommandPalette";
@@ -51,6 +51,7 @@ import {
   IconZenExit,
 } from "./lib/icons";
 import { loadAiConfig, saveAiConfig, type AiConfig } from "./lib/ai/config";
+import { isMacProtectedHomePath, safeAutomaticPath } from "./lib/privacy";
 import {
   loadSession,
   saveSession,
@@ -88,6 +89,19 @@ interface Tab {
   /** Workspace this tab belongs to. Tabs of inactive workspaces stay mounted
    *  (terminals keep running) but hidden. */
   ws: number;
+}
+
+const UPDATE_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
+
+const AI_PANEL_DEFAULT_WIDTH = 360;
+const AI_PANEL_MIN_WIDTH = 240;
+const AI_PANEL_MAX_WIDTH = 720;
+
+function clampAiWidth(width: number): number {
+  return Math.min(
+    AI_PANEL_MAX_WIDTH,
+    Math.max(AI_PANEL_MIN_WIDTH, width),
+  );
 }
 
 /** Coding-agent CLIs that can be launched in a terminal. They run through the
@@ -165,6 +179,12 @@ export default function App() {
   }, []);
 
   const [leftWidth, setLeftWidth] = useState(() => initial?.leftWidth ?? 280);
+  const [aiWidth, setAiWidth] = useState(() => {
+    const width = initial?.aiWidth;
+    return typeof width === "number" && Number.isFinite(width)
+      ? clampAiWidth(width)
+      : AI_PANEL_DEFAULT_WIDTH;
+  });
   const [sidebarOpen, setSidebarOpen] = useState(
     () => initial?.sidebarOpen ?? true,
   );
@@ -258,6 +278,8 @@ export default function App() {
     ),
   );
   const dragging = useRef(false);
+  const aiDragging = useRef(false);
+  const aiDragOffset = useRef(0);
   const dragTab = useRef<number | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   // The two independently-scrolling strips (workspaces / tabs); we scroll the
@@ -679,17 +701,32 @@ export default function App() {
 
   // Auto-update: shortly after launch, quietly check for a newer release and
   // offer to install it. Stays silent when up to date or offline so it never
-  // nags. Honors the "Check for updates on launch" setting.
+  // nags. Honors the "Check for updates on launch" setting and update-prompt
+  // snoozes chosen from the automatic prompt.
   useEffect(() => {
     const t = window.setTimeout(async () => {
-      if (!settingsRef.current.autoUpdate) return;
+      const updateSettings = settingsRef.current;
+      if (!updateSettings.autoUpdate) return;
+      if (Date.now() < updateSettings.autoUpdateSnoozedUntil) return;
       try {
         const info = await checkUpdate();
         if (!info.available) return;
-        const go = await confirmDialog(
+        const action = await optionDialog(
           `Rune ${info.version ?? ""} is available. Install it now and restart?`,
+          [
+            { value: "later", label: "Not now" },
+            { value: "snooze", label: "Remind me in 7 days" },
+            { value: "install", label: "Install", primary: true },
+          ],
         );
-        if (go) await installUpdate(); // relaunches on success
+        if (action === "install") {
+          await installUpdate(); // relaunches on success
+        } else if (action === "snooze") {
+          setSettings((s) => ({
+            ...s,
+            autoUpdateSnoozedUntil: Date.now() + UPDATE_SNOOZE_MS,
+          }));
+        }
       } catch {
         /* offline / no published release / signature issue — stay silent */
       }
@@ -757,6 +794,7 @@ export default function App() {
       activeTab,
       focusedPane,
       leftWidth,
+      aiWidth,
       root,
       openItems,
       activeKey,
@@ -773,6 +811,7 @@ export default function App() {
     activeTab,
     focusedPane,
     leftWidth,
+    aiWidth,
     root,
     openItems,
     activeKey,
@@ -785,8 +824,25 @@ export default function App() {
   useEffect(() => {
     homeDir()
       .then((h) => {
+        for (const [id, cwd] of paneCwd.current) {
+          paneCwd.current.set(id, safeAutomaticPath(cwd, h));
+        }
+        const currentItems = openItemsRef.current;
+        const nextItems = currentItems.filter(
+          (item) => !isMacProtectedHomePath(item.path, h),
+        );
+        if (nextItems.length !== currentItems.length) {
+          setOpenItems(nextItems);
+          setActiveKey((key) =>
+            key && nextItems.some((item) => itemKey(item) === key)
+              ? key
+              : nextItems[0]
+                ? itemKey(nextItems[0])
+                : null,
+          );
+        }
         setHome(h);
-        setRoot((r) => r ?? h);
+        setRoot((r) => (r ? safeAutomaticPath(r, h) : h));
       })
       .catch(() => {
         setHome("/");
@@ -797,11 +853,18 @@ export default function App() {
   // Sidebar drag-resize.
   useEffect(() => {
     const move = (e: MouseEvent) => {
-      if (!dragging.current) return;
-      setLeftWidth(Math.min(Math.max(e.clientX, 160), 600));
+      if (dragging.current) {
+        setLeftWidth(Math.min(Math.max(e.clientX, 160), 600));
+      }
+      if (aiDragging.current) {
+        setAiWidth(
+          clampAiWidth(window.innerWidth - e.clientX + aiDragOffset.current),
+        );
+      }
     };
     const up = () => {
       dragging.current = false;
+      aiDragging.current = false;
       document.body.style.cursor = "";
     };
     window.addEventListener("mousemove", move);
@@ -1456,6 +1519,7 @@ export default function App() {
             <aside className="sidebar" style={{ width: leftWidth }}>
               <FileBrowser
                 rootPath={root}
+                home={home}
                 onNavigateRoot={navigateRoot}
                 onOpenFile={openFile}
                 onDiff={openDiff}
@@ -1678,6 +1742,17 @@ export default function App() {
             })}
           </div>
         </main>
+        {showAi && !zen && (
+          <div
+            className="divider ai-divider"
+            onMouseDown={(e) => {
+              aiDragging.current = true;
+              aiDragOffset.current =
+                aiWidth - (window.innerWidth - e.clientX);
+              document.body.style.cursor = "col-resize";
+            }}
+          />
+        )}
         {/* Kept mounted (hidden when closed) so an in-flight agent run and its
             transcript survive toggling the panel. Wrapped in an error boundary
             so an AI-panel render error can never blank the terminal. */}
@@ -1685,6 +1760,7 @@ export default function App() {
           <AIPanel
             config={aiConfig}
             cwd={root}
+            width={aiWidth}
             readTerminal={(lines) =>
               handles.current.get(focusedPane)?.getBuffer(lines) ?? null
             }

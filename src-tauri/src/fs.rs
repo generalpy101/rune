@@ -94,10 +94,17 @@ fn copy_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 pub fn duplicate_path(path: String) -> Result<String, String> {
     let p = Path::new(&path);
     let parent = p.parent().unwrap_or_else(|| Path::new("/"));
-    let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let stem = p
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy()));
     for n in 1..1000 {
-        let suffix = if n == 1 { " copy".to_string() } else { format!(" copy {n}") };
+        let suffix = if n == 1 {
+            " copy".to_string()
+        } else {
+            format!(" copy {n}")
+        };
         let name = match &ext {
             Some(ext) if !p.is_dir() => format!("{stem}{suffix}{ext}"),
             _ => format!("{stem}{suffix}"),
@@ -234,6 +241,102 @@ const SKIP_DIRS: [&str; 8] = [
     "vendor",
 ];
 
+#[cfg(target_os = "macos")]
+const MAC_PROTECTED_HOME_DIRS: [&str; 6] = [
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Pictures",
+    "Movies",
+    "Music",
+];
+
+#[cfg(target_os = "macos")]
+fn is_automatic_walk_skip_dir_in_home(path: &Path, name: &str, home: &Path) -> bool {
+    if name.ends_with(".photoslibrary") {
+        return true;
+    }
+
+    let under_home = path
+        .parent()
+        .and_then(|parent| parent.to_str())
+        .zip(home.to_str())
+        .map(|(parent, home)| parent.eq_ignore_ascii_case(home))
+        .unwrap_or(false);
+    under_home
+        && MAC_PROTECTED_HOME_DIRS
+            .iter()
+            .any(|protected| name.eq_ignore_ascii_case(protected))
+}
+
+#[cfg(target_os = "macos")]
+fn is_automatic_walk_skip_dir(path: &Path, name: &str) -> bool {
+    let Ok(home) = std::env::var("HOME") else {
+        return false;
+    };
+    is_automatic_walk_skip_dir_in_home(path, name, Path::new(&home))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_automatic_walk_skip_dir(_path: &Path, _name: &str) -> bool {
+    false
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn automatic_walk_skips_protected_home_children() {
+        let home = Path::new("/Users/rune");
+        assert!(is_automatic_walk_skip_dir_in_home(
+            Path::new("/Users/rune/Desktop"),
+            "Desktop",
+            home,
+        ));
+        assert!(is_automatic_walk_skip_dir_in_home(
+            Path::new("/Users/rune/Documents"),
+            "Documents",
+            home,
+        ));
+    }
+
+    #[test]
+    fn automatic_walk_matches_case_insensitively() {
+        let home = Path::new("/Users/Rune");
+        assert!(is_automatic_walk_skip_dir_in_home(
+            Path::new("/users/rune/desktop"),
+            "desktop",
+            home,
+        ));
+    }
+
+    #[test]
+    fn automatic_walk_allows_other_directories() {
+        let home = Path::new("/Users/rune");
+        assert!(!is_automatic_walk_skip_dir_in_home(
+            Path::new("/Users/rune/Projects"),
+            "Projects",
+            home,
+        ));
+        assert!(!is_automatic_walk_skip_dir_in_home(
+            Path::new("/Users/rune/Projects/Desktop"),
+            "Desktop",
+            home,
+        ));
+    }
+
+    #[test]
+    fn automatic_walk_skips_photos_libraries() {
+        let home = Path::new("/Users/rune");
+        assert!(is_automatic_walk_skip_dir_in_home(
+            Path::new("/Users/rune/Pictures/Photos Library.photoslibrary"),
+            "Photos Library.photoslibrary",
+            home,
+        ));
+    }
+}
+
 /// Recursively collect file paths (absolute) under `root` for the fuzzy file
 /// finder. Skips heavy directories and hidden directories, bounds depth and
 /// total count to stay fast on large trees.
@@ -259,6 +362,7 @@ pub fn walk_dir(root: String) -> Result<Vec<String>, String> {
                 if depth + 1 > MAX_DEPTH
                     || name.starts_with('.')
                     || SKIP_DIRS.contains(&name.as_str())
+                    || is_automatic_walk_skip_dir(&entry.path(), &name)
                 {
                     continue;
                 }
@@ -286,9 +390,7 @@ pub fn git_status(path: String) -> Result<HashMap<String, String>, String> {
         .args(["rev-parse", "--show-toplevel"])
         .output();
     let top = match top_out {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout).trim().to_string()
-        }
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => return Ok(map), // not a git repo
     };
 

@@ -31,6 +31,8 @@ interface Props {
   /** When true the panel is kept mounted but visually hidden, so in-flight
    *  agent runs (and their transcripts) survive closing the panel. */
   hidden?: boolean;
+  /** Current panel width, controlled by App's resize handle. */
+  width: number;
   onClose: () => void;
   onOpenSettings: () => void;
 }
@@ -185,7 +187,15 @@ function dotClass(running: boolean, awaiting: boolean, status: string): string {
   return "done";
 }
 
-export function AIPanel({ config, cwd, readTerminal, hidden, onClose, onOpenSettings }: Props) {
+export function AIPanel({
+  config,
+  cwd,
+  readTerminal,
+  hidden,
+  width,
+  onClose,
+  onOpenSettings,
+}: Props) {
   const {
     agents,
     selectedId,
@@ -407,7 +417,10 @@ export function AIPanel({ config, cwd, readTerminal, hidden, onClose, onOpenSett
     !selected.items.some((it) => it.kind === "tool" && it.result == null);
 
   return (
-    <div className="ai-panel" style={hidden ? { display: "none" } : undefined}>
+    <div
+      className="ai-panel"
+      style={hidden ? { display: "none" } : { width, flexBasis: width }}
+    >
       <div className="ai-head">
         <span className="ai-title">
           <IconSparkle size={13} /> AI Assistant

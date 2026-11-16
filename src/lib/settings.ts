@@ -41,6 +41,8 @@ export interface Settings {
   tidyOnSave: boolean;
   /** Check for app updates on launch and offer to install them. */
   autoUpdate: boolean;
+  /** Unix ms timestamp until which automatic update prompts are hidden. */
+  autoUpdateSnoozedUntil: number;
 }
 
 /** A saved command the user can re-run from the palette. */
@@ -377,6 +379,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autosaveDelayMs: 1000,
   tidyOnSave: false,
   autoUpdate: true,
+  autoUpdateSnoozedUntil: 0,
 };
 
 const KEY = "rustterm.settings";

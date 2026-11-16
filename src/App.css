@@ -571,7 +571,6 @@ body {
 .divider:hover {
   background: var(--accent);
 }
-
 .file-browser {
   display: flex;
   flex-direction: column;
@@ -1158,6 +1157,7 @@ button:hover {
 }
 .modal-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 14px;
@@ -1619,8 +1619,7 @@ button:hover {
 
 /* ---- AI side panel ---- */
 .ai-panel {
-  width: 360px;
-  flex: 0 0 360px;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1663,6 +1662,8 @@ button:hover {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
+  -webkit-user-select: text;
+  user-select: text;
 }
 .ai-setup button {
   margin-top: 12px;
@@ -1849,6 +1850,8 @@ button:hover {
   border: 1px dashed var(--border);
   border-radius: 999px;
   opacity: 0.85;
+  -webkit-user-select: text;
+  user-select: text;
 }
 .ai-info-icon {
   font-size: 10px;
@@ -1862,6 +1865,8 @@ button:hover {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  -webkit-user-select: text;
+  user-select: text;
 }
 /* The column is a scroll container; without this its children (notably the
    tool cards, which set overflow:hidden) get flex-shrunk into thin lines as
@@ -1873,6 +1878,8 @@ button:hover {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.5;
+  -webkit-user-select: text;
+  user-select: text;
 }
 .ai-empty code {
   display: block;
@@ -1887,6 +1894,8 @@ button:hover {
   word-break: break-word;
   border-radius: 8px;
   padding: 8px 10px;
+  -webkit-user-select: text;
+  user-select: text;
 }
 .ai-msg.user {
   background: var(--panel);
@@ -1901,6 +1910,8 @@ button:hover {
 .ai-stream {
   white-space: pre-wrap;
   word-break: break-word;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* Rendered Markdown for finished assistant turns. Resets the pre-wrap from
@@ -1908,6 +1919,8 @@ button:hover {
 .ai-md {
   white-space: normal;
   line-height: 1.5;
+  -webkit-user-select: text;
+  user-select: text;
 }
 .ai-md > :first-child {
   margin-top: 0;
@@ -2031,6 +2044,8 @@ button:hover {
   background: var(--panel);
   border: none;
   cursor: pointer;
+  -webkit-user-select: text;
+  user-select: text;
 }
 .ai-tool-head:disabled {
   cursor: default;
@@ -2064,6 +2079,8 @@ button:hover {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  -webkit-user-select: text;
+  user-select: text;
 }
 .ai-tool-caret {
   flex: 0 0 auto;
@@ -2143,6 +2160,8 @@ button:hover {
 .ai-approve span {
   flex: 1;
   color: var(--muted);
+  -webkit-user-select: text;
+  user-select: text;
 }
 .ai-approve button {
   border: 1px solid var(--border);
@@ -2166,6 +2185,8 @@ button:hover {
   font-size: 11px;
   white-space: pre-wrap;
   word-break: break-word;
+  -webkit-user-select: text;
+  user-select: text;
 }
 /* ---- AI patch / diff preview ---- */
 .ai-diff {
@@ -2195,6 +2216,8 @@ button:hover {
   font-family: Menlo, monospace;
   font-size: 11px;
   line-height: 1.5;
+  -webkit-user-select: text;
+  user-select: text;
 }
 .ai-diff-line {
   display: flex;
@@ -2220,6 +2243,8 @@ button:hover {
   padding-right: 8px;
   word-break: break-word;
   white-space: pre-wrap;
+  -webkit-user-select: text;
+  user-select: text;
 }
 .ai-diff-line.ai-diff-add {
   background: color-mix(in srgb, var(--success) 14%, transparent);
