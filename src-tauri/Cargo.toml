@@ -18,7 +18,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["macos-private-api"] }
+# Pinned exactly: child webviews (browser panes) need the `unstable` API,
+# which may change in any minor release.
+tauri = { version = "=2.11.2", features = ["macos-private-api", "unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
 serde = { version = "1", features = ["derive"] }
@@ -29,6 +31,18 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "str
 futures-util = "0.3"
 bytes = "1"
 tokio = { version = "1", features = ["time", "sync", "macros"] }
+tempfile = "3"
+# Chrome profile import for browser panes: read the cookie database and
+# decrypt values (AES-128-CBC, key via PBKDF2-HMAC-SHA1).
+rusqlite = { version = "0.32", features = ["bundled"] }
+aes = "0.8"
+cbc = { version = "0.1", features = ["block-padding"] }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+sha1 = "0.10"
+
+# Keychain access for Chrome's "Chrome Safe Storage" key (already in the tree via TLS).
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
 
 # Signal/process-group APIs are POSIX-only; Windows uses taskkill instead.
 [target.'cfg(unix)'.dependencies]

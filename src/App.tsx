@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { TerminalPane, type TerminalHandle } from "./components/TerminalPane";
+import { BrowserPane, type BrowserHandle } from "./components/BrowserPane";
 import { FileBrowser } from "./components/FileBrowser";
 import {
   EditorArea,
@@ -29,11 +30,21 @@ import {
   type Settings,
   type Profile,
   type SshHost,
+  type LinkOpenBehavior,
 } from "./lib/settings";
 import type { SpawnProfile } from "./lib/pty";
 import { agentSpawn } from "./lib/pty";
 import { runMeta } from "./lib/meta";
 import { getCurrentWindow, Effect } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import {
+  isWebUrl,
+  loadBrowserBookmarks,
+  saveBrowserBookmarks,
+  type BrowserBookmark,
+  type BrowserPaneState,
+} from "./lib/browser";
 import {
   IconPlus,
   IconClose,
@@ -49,6 +60,7 @@ import {
   IconSplitDown,
   IconZen,
   IconZenExit,
+  IconGlobe,
 } from "./lib/icons";
 import { loadAiConfig, saveAiConfig, type AiConfig } from "./lib/ai/config";
 import { isMacProtectedHomePath, safeAutomaticPath } from "./lib/privacy";
@@ -56,7 +68,8 @@ import {
   loadSession,
   saveSession,
   nextIdFor,
-  pruneCwd,
+  pruneToLeaves,
+  loadBrowserPanes,
   DEFAULT_WS,
   type Workspace,
 } from "./lib/session";
@@ -92,6 +105,19 @@ interface Tab {
 }
 
 const UPDATE_SNOOZE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Rune overlays that must sit above browser panes. Native webviews always
+ *  paint over the HTML UI, so panes are hidden while any of these exist. */
+const OVERLAY_SELECTOR =
+  ".modal-overlay, .menu-backdrop, .ctx-menu, .activity-pop";
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
 
 const AI_PANEL_DEFAULT_WIDTH = 360;
 const AI_PANEL_MIN_WIDTH = 240;
@@ -236,6 +262,18 @@ export default function App() {
   // Tab ids that have produced output while in the background (cleared when
   // the tab is selected). Drives the unread-activity dot on tabs.
   const [activity, setActivity] = useState<Set<number>>(() => new Set());
+  // Leaves that are browser panes (by leaf id) and their last URL/title. Not
+  // removed when a pane closes, so ⌘⇧T can restore it; pruned on save.
+  const [browserPanes, setBrowserPanes] = useState<
+    Record<number, BrowserPaneState>
+  >(() => loadBrowserPanes(initial));
+  const browserPanesRef = useRef(browserPanes);
+  browserPanesRef.current = browserPanes;
+  const browserHandles = useRef(new Map<number, BrowserHandle>());
+  const [browserBookmarks, setBrowserBookmarks] =
+    useState<BrowserBookmark[]>(loadBrowserBookmarks);
+  // True while a modal, dialog, palette or menu is in the DOM.
+  const [overlayOpen, setOverlayOpen] = useState(false);
 
   // Latest settings in a ref so tab-creation callbacks can read profiles
   // without taking `settings` as a dependency (which would churn the keyboard
@@ -498,7 +536,10 @@ export default function App() {
     (dir: "row" | "col") => {
       const pid = nextId.current++;
       const sid = nextId.current++;
-      const cur = paneCwd.current.get(focusedPane);
+      // A browser pane has no cwd; a terminal split from it starts at the root.
+      const cur =
+        paneCwd.current.get(focusedPane) ??
+        (browserPanesRef.current[focusedPane] ? root : undefined);
       if (cur) paneCwd.current.set(pid, cur);
       setTabs((prev) =>
         prev.map((t) =>
@@ -509,7 +550,77 @@ export default function App() {
       );
       setFocusedPane(pid);
     },
-    [activeTab, focusedPane],
+    [activeTab, focusedPane, root],
+  );
+
+  // New Rune tab holding a single browser pane (blank url = empty address
+  // bar waiting for input).
+  const newBrowserTab = useCallback((url = "") => {
+    const tid = nextId.current++;
+    const pid = nextId.current++;
+    setBrowserPanes((b) => ({ ...b, [pid]: { url } }));
+    setTabs((t) => [
+      ...t,
+      { id: tid, ws: activeWsRef.current, layout: leaf(pid) },
+    ]);
+    setActiveTab(tid);
+    setFocusedPane(pid);
+  }, []);
+
+  // Open `url` in Rune: navigate `fromPane` if it is a browser pane, else
+  // open it in a new browser tab.
+  const openInRune = useCallback(
+    (url: string, fromPane: number) => {
+      if (browserPanesRef.current[fromPane]) {
+        browserHandles.current.get(fromPane)?.navigate(url);
+        setFocusedPane(fromPane);
+      } else {
+        newBrowserTab(url);
+      }
+    },
+    [newBrowserTab],
+  );
+
+  // A ⌘/Ctrl-clicked terminal link, routed by the link-open setting.
+  const openLink = useCallback(
+    async (url: string, fromPane: number) => {
+      if (!isWebUrl(url)) return;
+      let choice: LinkOpenBehavior = settingsRef.current.linkOpenBehavior;
+      if (choice !== "rune" && choice !== "external") {
+        const shown = url.length > 120 ? `${url.slice(0, 117)}…` : url;
+        const picked = await optionDialog(`Open ${shown}`, [
+          { value: "copy", label: "Copy link" },
+          { value: "external", label: "Open externally" },
+          { value: "rune", label: "Open in Rune", primary: true },
+        ]);
+        if (!picked) return;
+        if (picked === "copy") {
+          await navigator.clipboard.writeText(url).catch(() => {});
+          return;
+        }
+        choice = picked;
+      }
+      if (choice === "rune") openInRune(url, fromPane);
+      else
+        await openUrl(url).catch((e) =>
+          alertDialog(`Couldn't open the link: ${e}`),
+        );
+    },
+    [openInRune],
+  );
+
+  // Keep a browser pane's persisted URL/title in step with its page.
+  const updateBrowserPane = useCallback(
+    (id: number, url: string, title?: string) => {
+      setBrowserPanes((b) => {
+        const cur = b[id];
+        if (!cur) return b;
+        const nextTitle = title ?? (cur.url === url ? cur.title : undefined);
+        if (cur.url === url && cur.title === nextTitle) return b;
+        return { ...b, [id]: { url, title: nextTitle } };
+      });
+    },
+    [],
   );
 
   // Close a specific pane; closes the whole tab when it's the last pane. The
@@ -747,6 +858,78 @@ export default function App() {
   // Persist settings.
   useEffect(() => saveSettings(settings), [settings]);
 
+  // Track whether any overlay is open (including dialogs portaled onto
+  // <body>), checked at most once per frame.
+  useEffect(() => {
+    let raf = 0;
+    const check = () => {
+      raf = 0;
+      setOverlayOpen(!!document.querySelector(OVERLAY_SELECTOR));
+    };
+    const mo = new MutationObserver(() => {
+      if (!raf) raf = requestAnimationFrame(check);
+    });
+    mo.observe(document.body, { childList: true, subtree: true });
+    check();
+    return () => {
+      mo.disconnect();
+      cancelAnimationFrame(raf);
+    };
+  }, []);
+
+  // Clicking into a browser page moves keyboard focus to its native webview,
+  // which Rune's UI never sees. When the UI loses focus with the pointer on a
+  // browser pane, make that pane the focused one (so ⌘W closes it).
+  useEffect(() => {
+    let x = -1;
+    let y = -1;
+    const move = (e: PointerEvent) => {
+      x = e.clientX;
+      y = e.clientY;
+    };
+    const blur = () => {
+      const panes = document.querySelectorAll<HTMLElement>("[data-browser-pane]");
+      let best: { id: number; distance: number } | null = null;
+      for (const el of panes) {
+        const r = el.getBoundingClientRect();
+        const near = 8; // the last event the UI saw is just outside the page
+        if (
+          r.width <= 0 ||
+          x < r.left - near ||
+          x > r.right + near ||
+          y < r.top - near ||
+          y > r.bottom + near
+        ) {
+          continue;
+        }
+        const distance = Math.hypot(r.left + r.width / 2 - x, r.top + r.height / 2 - y);
+        if (!best || distance < best.distance) {
+          best = { id: Number(el.dataset.browserPane), distance };
+        }
+      }
+      if (best) setFocusedPane(best.id);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("blur", blur);
+    };
+  }, []);
+
+  // macOS menu "Close Pane" (⌘W). It only fires when Rune's UI didn't take
+  // ⌘W itself — i.e. a browser page has focus — or from a menu click. From a
+  // page, close a browser pane only; never guess at a terminal.
+  useEffect(() => {
+    const un = listen("close-focused-pane", () => {
+      const id = focusedPaneRef.current;
+      if (document.hasFocus() || browserPanesRef.current[id]) void closePane(id);
+    });
+    return () => {
+      void un.then((f) => f());
+    };
+  }, [closePane]);
+
   // Keep the active tab / workspace scrolled into view within their (now
   // separate) horizontal strips, so keyboard selection of an off-screen item
   // brings it into view.
@@ -801,10 +984,11 @@ export default function App() {
       sidebarOpen,
       workspaces,
       activeWs,
-      paneCwd: pruneCwd(
+      paneCwd: pruneToLeaves(
         tabs,
         Object.fromEntries(paneCwd.current),
       ),
+      browserPanes: pruneToLeaves(tabs, browserPanes),
     });
   }, [
     tabs,
@@ -818,6 +1002,7 @@ export default function App() {
     sidebarOpen,
     workspaces,
     activeWs,
+    browserPanes,
   ]);
 
   // Resolve home directory before mounting terminals (avoids a respawn).
@@ -1106,6 +1291,11 @@ export default function App() {
       run: () => splitFocused("col"),
     },
     { id: "close", label: "Close Pane", hint: "⌘W", run: closeFocused },
+    {
+      id: "new-browser-tab",
+      label: "New Browser Tab",
+      run: () => newBrowserTab(),
+    },
     ...(activeKey?.startsWith("file:")
       ? [
           {
@@ -1255,6 +1445,27 @@ export default function App() {
     return <div className="loading">Loading…</div>;
   }
 
+  // A browser tab (a single browser pane) is named after its page.
+  const tabPage = (t: Tab) => {
+    const ids = leafIds(t.layout);
+    return ids.length === 1 ? browserPanes[ids[0]] : undefined;
+  };
+  const tabLabel = (t: Tab, i: number) => {
+    if (t.title) return t.title;
+    const page = tabPage(t);
+    if (!page) return `Terminal ${i + 1}`;
+    return page.title || (page.url ? hostOf(page.url) : "New Tab");
+  };
+  // Moves panes without necessarily resizing them; browser panes re-measure.
+  const layoutKey = [
+    sidebarOpen && leftWidth,
+    showAi && !zen && aiWidth,
+    openItems.length > 0,
+    zen,
+    search.open,
+    zoomedPane,
+  ].join("|");
+
   return (
     <div className={`app${zen ? " zen" : ""}`}>
       {zen && (
@@ -1348,7 +1559,7 @@ export default function App() {
                     <input
                       className="tab-edit"
                       autoFocus
-                      defaultValue={t.title ?? `Terminal ${i + 1}`}
+                      defaultValue={tabLabel(t, i)}
                       onClick={(e) => e.stopPropagation()}
                       onBlur={(e) => {
                         renameTab(t.id, e.target.value);
@@ -1368,7 +1579,8 @@ export default function App() {
                       {activity.has(t.id) && t.id !== activeTab && (
                         <span className="tab-dot" title="New output" />
                       )}
-                      {t.title ?? `Terminal ${i + 1}`}
+                      {tabPage(t) && <IconGlobe size={12} className="tab-icon" />}
+                      {tabLabel(t, i)}
                     </span>
                   )}
                   <button
@@ -1390,6 +1602,13 @@ export default function App() {
             onClick={() => newTab()}
           >
             <IconPlus size={15} />
+          </button>
+          <button
+            className="tab-new icon-btn"
+            title="New browser tab"
+            onClick={() => newBrowserTab()}
+          >
+            <IconGlobe size={14} />
           </button>
           <div className="newtab-menu-wrap">
             <button
@@ -1644,49 +1863,71 @@ export default function App() {
                           display: hidden ? "none" : "block",
                         }}
                       >
-                        <TerminalPane
-                          ref={getRefCb(id)}
-                          cwd={paneCwd.current.get(id) ?? home}
-                          profile={t.spawn ?? profileSpawn(profileById(t.profileId))}
-                          visible={tabActive && !hidden}
-                          focused={tabActive && id === focusedPane}
-                          settings={settings}
-                          onCwdChange={(c) => {
-                            paneCwd.current.set(id, c);
-                            if (id === focusedPane) setRoot(c);
-                          }}
-                          onFocusRequest={() => setFocusedPane(id)}
-                          onOpenPath={openFile}
-                          onResize={(rows, cols) => {
-                            if (id === focusedPane) setDims({ rows, cols });
-                          }}
-                          onInput={(data) => {
-                            if (!broadcast || id !== focusedPane) return;
-                            for (const lid of leafIds(t.layout)) {
-                              if (lid !== id)
-                                handles.current.get(lid)?.write(data);
+                        {browserPanes[id] ? (
+                          <BrowserPane
+                            ref={(h) => {
+                              if (h) browserHandles.current.set(id, h);
+                              else browserHandles.current.delete(id);
+                            }}
+                            paneId={id}
+                            url={browserPanes[id].url}
+                            live={tabActive && !hidden}
+                            covered={overlayOpen}
+                            focused={tabActive && id === focusedPane}
+                            layoutKey={layoutKey}
+                            bookmarks={browserBookmarks}
+                            onPageChange={(url, title) =>
+                              updateBrowserPane(id, url, title)
                             }
-                          }}
-                          onActivity={() => {
-                            if (t.id === activeTab) return;
-                            setActivity((prev) => {
-                              if (prev.has(t.id)) return prev;
-                              const next = new Set(prev);
-                              next.add(t.id);
-                              return next;
-                            });
-                          }}
-                          onMeta={handleMeta}
-                          canClose={leaves.length > 1}
-                          onClose={() => closePane(id)}
-                          onExit={(code) => {
-                            // Clean exit (e.g. `exit`, SSH logout) closes the
-                            // pane/tab; abnormal exits stay open (TerminalPane
-                            // shows the code) so the error is readable.
-                            if (code === 0) closePane(id);
-                          }}
-                          persistKey={id}
-                        />
+                            onFocusRequest={() => setFocusedPane(id)}
+                            onClose={() => closePane(id)}
+                          />
+                        ) : (
+                          <TerminalPane
+                            ref={getRefCb(id)}
+                            cwd={paneCwd.current.get(id) ?? home}
+                            profile={t.spawn ?? profileSpawn(profileById(t.profileId))}
+                            visible={tabActive && !hidden}
+                            focused={tabActive && id === focusedPane}
+                            settings={settings}
+                            onCwdChange={(c) => {
+                              paneCwd.current.set(id, c);
+                              if (id === focusedPane) setRoot(c);
+                            }}
+                            onFocusRequest={() => setFocusedPane(id)}
+                            onOpenPath={openFile}
+                            onOpenLink={(url) => void openLink(url, id)}
+                            onResize={(rows, cols) => {
+                              if (id === focusedPane) setDims({ rows, cols });
+                            }}
+                            onInput={(data) => {
+                              if (!broadcast || id !== focusedPane) return;
+                              for (const lid of leafIds(t.layout)) {
+                                if (lid !== id)
+                                  handles.current.get(lid)?.write(data);
+                              }
+                            }}
+                            onActivity={() => {
+                              if (t.id === activeTab) return;
+                              setActivity((prev) => {
+                                if (prev.has(t.id)) return prev;
+                                const next = new Set(prev);
+                                next.add(t.id);
+                                return next;
+                              });
+                            }}
+                            onMeta={handleMeta}
+                            canClose={leaves.length > 1}
+                            onClose={() => closePane(id)}
+                            onExit={(code) => {
+                              // Clean exit (e.g. `exit`, SSH logout) closes the
+                              // pane/tab; abnormal exits stay open (TerminalPane
+                              // shows the code) so the error is readable.
+                              if (code === 0) closePane(id);
+                            }}
+                            persistKey={id}
+                          />
+                        )}
                       </div>
                     );
                   })}
@@ -1774,8 +2015,8 @@ export default function App() {
       <StatusBar
         cwd={root}
         profileName={profileById(tabs.find((t) => t.id === activeTab)?.profileId)?.name ?? null}
-        rows={dims?.rows ?? null}
-        cols={dims?.cols ?? null}
+        rows={browserPanes[focusedPane] ? null : (dims?.rows ?? null)}
+        cols={browserPanes[focusedPane] ? null : (dims?.cols ?? null)}
       />
 
       {showAiSettings && (
@@ -1791,6 +2032,11 @@ export default function App() {
           settings={settings}
           onChange={setSettings}
           onClose={() => setShowSettings(false)}
+          browserBookmarks={browserBookmarks}
+          onBrowserBookmarks={(list) => {
+            setBrowserBookmarks(list);
+            saveBrowserBookmarks(list);
+          }}
         />
       )}
 

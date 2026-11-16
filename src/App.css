@@ -183,6 +183,10 @@ body {
   color: var(--text);
   border-color: var(--border);
 }
+.tab-icon {
+  margin-right: 5px;
+  vertical-align: -2px;
+}
 .tab-dot {
   display: inline-block;
   width: 6px;
@@ -764,6 +768,75 @@ button:hover {
   opacity: 1;
   color: var(--text);
   background: var(--danger);
+}
+
+/* ---- Browser pane: toolbar + a placeholder the native webview covers ---- */
+.browser-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--panel);
+  outline: none;
+}
+.browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+}
+.browser-address {
+  flex: 1;
+  min-width: 0;
+  margin: 0 4px;
+}
+.browser-address input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 3px 8px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  outline: none;
+}
+.browser-address input:focus {
+  border-color: var(--accent);
+}
+.browser-address.loading input {
+  border-bottom-color: var(--accent);
+}
+.browser-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel-3);
+  border-bottom: 1px solid var(--border);
+}
+.browser-notice span {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.browser-notice button {
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+}
+/* Inset so the focused-pane ring stays visible around the page. */
+.browser-view {
+  flex: 1;
+  margin: 0 2px 2px;
+}
+.browser-blank {
+  padding: 40px 16px;
+  font-size: 13px;
+  text-align: center;
+  color: var(--muted);
 }
 .pane-divider-v,
 .pane-divider-h {

@@ -43,7 +43,12 @@ export interface Settings {
   autoUpdate: boolean;
   /** Unix ms timestamp until which automatic update prompts are hidden. */
   autoUpdateSnoozedUntil: number;
+  /** Where a ⌘/Ctrl-clicked terminal link opens: an in-app browser pane, the
+   *  default browser, or ask each time. */
+  linkOpenBehavior: LinkOpenBehavior;
 }
+
+export type LinkOpenBehavior = "rune" | "external" | "ask";
 
 /** A saved command the user can re-run from the palette. */
 export interface Snippet {
@@ -380,6 +385,7 @@ export const DEFAULT_SETTINGS: Settings = {
   tidyOnSave: false,
   autoUpdate: true,
   autoUpdateSnoozedUntil: 0,
+  linkOpenBehavior: "ask",
 };
 
 const KEY = "rustterm.settings";

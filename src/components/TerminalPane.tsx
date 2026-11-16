@@ -96,6 +96,8 @@ interface Props {
   onFocusRequest?: () => void;
   /** Open a file path the user clicked in the terminal output. */
   onOpenPath?: (path: string) => void;
+  /** Open a web link the user ⌘/Ctrl-clicked in the terminal output. */
+  onOpenLink?: (url: string) => void;
   /** Reports the terminal's grid size after a fit (rows × cols). */
   onResize?: (rows: number, cols: number) => void;
   /** Fires for every keystroke/data the user types — used for broadcast input. */
@@ -130,6 +132,7 @@ export const TerminalPane = forwardRef<TerminalHandle, Props>(
       onCwdChange,
       onFocusRequest,
       onOpenPath,
+      onOpenLink,
       onResize,
       onInput,
       onActivity,
@@ -210,6 +213,8 @@ export const TerminalPane = forwardRef<TerminalHandle, Props>(
     onFocusRequestRef.current = onFocusRequest;
     const onOpenPathRef = useRef(onOpenPath);
     onOpenPathRef.current = onOpenPath;
+    const onOpenLinkRef = useRef(onOpenLink);
+    onOpenLinkRef.current = onOpenLink;
     const onResizeRef = useRef(onResize);
     onResizeRef.current = onResize;
     const onInputRef = useRef(onInput);
@@ -301,7 +306,12 @@ export const TerminalPane = forwardRef<TerminalHandle, Props>(
       searchRef.current = searchAddon;
       term.loadAddon(fitAddon);
       term.loadAddon(searchAddon);
-      term.loadAddon(new WebLinksAddon());
+      term.loadAddon(
+        new WebLinksAddon((event, uri) => {
+          // A plain click selects text; ⌘/Ctrl-click follows the link.
+          if (event.metaKey || event.ctrlKey) onOpenLinkRef.current?.(uri);
+        }),
+      );
       term.open(containerRef.current);
 
       // Shell-integration channel: the `rt` shell function emits

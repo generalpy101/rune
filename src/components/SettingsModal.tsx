@@ -8,17 +8,37 @@ import {
   type Snippet,
   type SshHost,
   type UIColors,
+  type LinkOpenBehavior,
 } from "../lib/settings";
 import { parseThemeText } from "../lib/theme-import";
 import { IconClose } from "../lib/icons";
+import { confirmDialog } from "../lib/dialogs";
+import {
+  browserClearData,
+  browserProfiles,
+  importBookmarks,
+  importCookies,
+  mergeBookmarks,
+  type BrowserBookmark,
+  type ChromiumProfile,
+} from "../lib/browser";
 
 interface Props {
   settings: Settings;
   onChange: (settings: Settings) => void;
   onClose: () => void;
+  /** Imported browser bookmarks (stored apart from settings). */
+  browserBookmarks: BrowserBookmark[];
+  onBrowserBookmarks: (list: BrowserBookmark[]) => void;
 }
 
-type Section = "general" | "themes" | "profiles" | "snippets" | "ssh";
+type Section =
+  | "general"
+  | "themes"
+  | "profiles"
+  | "snippets"
+  | "ssh"
+  | "browser";
 
 /** Human labels for the editable UI palette slots. */
 const UI_FIELDS: [keyof UIColors, string][] = [
@@ -78,7 +98,13 @@ const serializeEnv = (env?: Record<string, string>): string =>
     .map(([k, v]) => `${k}=${v}`)
     .join("\n");
 
-export function SettingsModal({ settings, onChange, onClose }: Props) {
+export function SettingsModal({
+  settings,
+  onChange,
+  onClose,
+  browserBookmarks,
+  onBrowserBookmarks,
+}: Props) {
   const [section, setSection] = useState<Section>("general");
   const set = <K extends keyof Settings>(key: K, value: Settings[K]) =>
     onChange({ ...settings, [key]: value });
@@ -93,7 +119,14 @@ export function SettingsModal({ settings, onChange, onClose }: Props) {
           <div className="modal-msg">Settings</div>
           <div className="settings-tabs">
             {(
-              ["general", "themes", "profiles", "snippets", "ssh"] as Section[]
+              [
+                "general",
+                "themes",
+                "profiles",
+                "snippets",
+                "ssh",
+                "browser",
+              ] as Section[]
             ).map((s) => (
               <button
                 key={s}
@@ -122,6 +155,14 @@ export function SettingsModal({ settings, onChange, onClose }: Props) {
           {section === "ssh" && (
             <SshSection settings={settings} onChange={onChange} />
           )}
+          {section === "browser" && (
+            <BrowserSection
+              settings={settings}
+              set={set}
+              bookmarks={browserBookmarks}
+              onBookmarks={onBrowserBookmarks}
+            />
+          )}
         </div>
 
         <div className="modal-actions">
@@ -135,6 +176,193 @@ export function SettingsModal({ settings, onChange, onClose }: Props) {
 }
 
 // ─────────────────────────── General ───────────────────────────
+
+/** Status line under a Browser-section action. */
+type Status = { ok: boolean; text: string } | null;
+
+function BrowserSection({
+  settings,
+  set,
+  bookmarks,
+  onBookmarks,
+}: {
+  settings: Settings;
+  set: <K extends keyof Settings>(key: K, value: Settings[K]) => void;
+  bookmarks: BrowserBookmark[];
+  onBookmarks: (list: BrowserBookmark[]) => void;
+}) {
+  const [profiles, setProfiles] = useState<ChromiumProfile[] | null>(null);
+  const [bookmarkDir, setBookmarkDir] = useState("");
+  const [cookieDir, setCookieDir] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<Status>(null);
+
+  useEffect(() => {
+    browserProfiles()
+      .then((list) => {
+        setProfiles(list);
+        setBookmarkDir(list.find((p) => p.hasBookmarks)?.dir ?? "");
+        setCookieDir(list.find((p) => p.hasCookies)?.dir ?? "");
+      })
+      .catch(() => setProfiles([]));
+  }, []);
+
+  const label = (p: ChromiumProfile) => `${p.browser} — ${p.name}`;
+  const withBookmarks = profiles?.filter((p) => p.hasBookmarks) ?? [];
+  const withCookies = profiles?.filter((p) => p.hasCookies) ?? [];
+
+  // Run one import/clear action, reporting its outcome below the buttons.
+  const act = async (fn: () => Promise<string | null>) => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      const text = await fn();
+      if (text) setStatus({ ok: true, text });
+    } catch (e) {
+      setStatus({ ok: false, text: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runBookmarkImport = () =>
+    act(async () => {
+      const res = await importBookmarks(bookmarkDir);
+      const merged = mergeBookmarks(bookmarks, res.bookmarks);
+      const added = merged.length - bookmarks.length;
+      onBookmarks(merged);
+      const already = res.bookmarks.length - added + res.duplicates;
+      return (
+        `Imported ${added} new bookmark${added === 1 ? "" : "s"}` +
+        (already ? `, ${already} already saved` : "") +
+        (res.skipped ? `, ${res.skipped} non-web skipped` : "") +
+        "."
+      );
+    });
+
+  const runCookieImport = () =>
+    act(async () => {
+      const profile = withCookies.find((p) => p.dir === cookieDir);
+      const ok = await confirmDialog(
+        `Import cookies from Chrome (${profile?.name ?? "profile"})? ` +
+          "Your OS may ask Rune for access to Chrome's encryption key " +
+          "(on macOS, the “Chrome Safe Storage” Keychain item). " +
+          "This is best effort: some sites will still ask you to sign in.",
+      );
+      if (!ok) return null;
+      const r = await importCookies(cookieDir);
+      const undecrypted = r.unsupported + r.failed;
+      return (
+        `Imported ${r.imported} of ${r.found} cookies` +
+        (r.expired ? `, ${r.expired} expired` : "") +
+        (undecrypted ? `, ${undecrypted} couldn't be decrypted` : "") +
+        "."
+      );
+    });
+
+  const runClear = () =>
+    act(async () => {
+      const ok = await confirmDialog(
+        "Clear cookies, cache and site data for Rune's browser panes? Terminal sessions and settings are not affected.",
+      );
+      if (!ok) return null;
+      await browserClearData();
+      return "Browser data cleared.";
+    });
+
+  return (
+    <>
+      <div className="theme-group-title">Terminal links</div>
+      <label className="setting-row">
+        <span>⌘/Ctrl-click a link</span>
+        <select
+          value={settings.linkOpenBehavior}
+          onChange={(e) =>
+            set("linkOpenBehavior", e.target.value as LinkOpenBehavior)
+          }
+        >
+          <option value="ask">Ask each time</option>
+          <option value="rune">Open in Rune</option>
+          <option value="external">Open in default browser</option>
+        </select>
+      </label>
+
+      <div className="theme-group-title">Bookmarks</div>
+      <label className="setting-row">
+        <span>Import from</span>
+        <select
+          value={bookmarkDir}
+          disabled={!withBookmarks.length}
+          onChange={(e) => setBookmarkDir(e.target.value)}
+        >
+          {withBookmarks.length === 0 && (
+            <option value="">
+              {profiles ? "No Chromium profiles found" : "Looking…"}
+            </option>
+          )}
+          {withBookmarks.map((p) => (
+            <option key={p.dir} value={p.dir}>
+              {label(p)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="theme-actions">
+        <button
+          disabled={busy || !bookmarkDir}
+          onClick={() => void runBookmarkImport()}
+        >
+          Import bookmarks
+        </button>
+        {bookmarks.length > 0 && (
+          <button disabled={busy} onClick={() => onBookmarks([])}>
+            Remove all ({bookmarks.length})
+          </button>
+        )}
+      </div>
+
+      <div className="theme-group-title">Cookies</div>
+      <label className="setting-row">
+        <span>Import from</span>
+        <select
+          value={cookieDir}
+          disabled={!withCookies.length}
+          onChange={(e) => setCookieDir(e.target.value)}
+        >
+          {withCookies.length === 0 && (
+            <option value="">
+              {profiles ? "No Chrome profiles found" : "Looking…"}
+            </option>
+          )}
+          {withCookies.map((p) => (
+            <option key={p.dir} value={p.dir}>
+              {label(p)}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="theme-actions">
+        <button
+          disabled={busy || !cookieDir}
+          onClick={() => void runCookieImport()}
+        >
+          Import cookies…
+        </button>
+        <button disabled={busy} onClick={() => void runClear()}>
+          Clear browser data…
+        </button>
+      </div>
+      <p className="ai-hint">
+        Chrome only, best effort. Imported sign-ins may not survive sites that
+        bind sessions to the original browser. Passwords are never imported;
+        use “Open in default browser” for password-heavy sign-ins.
+      </p>
+      {status && (
+        <div className={status.ok ? "ai-hint" : "ai-error"}>{status.text}</div>
+      )}
+    </>
+  );
+}
 
 function GeneralSection({
   settings,

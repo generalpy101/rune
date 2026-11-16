@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
-  "windows": ["main"],
+  "description": "Capability for Rune's own UI webview. Scoped by webview (not window) so browser panes, which are child webviews of the main window, get no plugin permissions.",
+  "webviews": ["main"],
   "permissions": [
     "core:default",
     "opener:default",
