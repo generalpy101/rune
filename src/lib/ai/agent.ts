@@ -13,6 +13,7 @@ import {
 } from "./context";
 import type { ProviderConfig } from "./config";
 import type { ChatMessage, ToolCall, ToolDef } from "./types";
+import type { TerminalContextAccess } from "../settings";
 
 /** Default tool-step budget when the caller doesn't specify one. */
 const MAX_STEPS = 50;
@@ -182,8 +183,7 @@ const DESTRUCTIVE = new Set([
   "start_server",
 ]);
 
-/** Tools that only read state — safe to run concurrently within a turn (they
- *  never need approval, so they don't contend for the single approval slot). */
+/** Read-only tools can run concurrently, except terminal reads in Ask mode. */
 const READ_ONLY = new Set([
   "read_file",
   "list_dir",
@@ -217,8 +217,9 @@ export function systemPrompt(opts: AgentOptions): string {
     "- Inspect real state with tools instead of guessing: read files and run commands before drawing conclusions.",
     "- Read a file before editing it, so your edit matches the exact current text.",
     "- To change an existing file use edit_file (a precise string replacement). Only use write_file to create a new file or fully replace one — never rewrite a whole file just to change a few lines.",
-    "- You can call several read-only tools (read_file, list_dir, read_terminal) in one turn; they run in parallel.",
+    "- You can call several read-only tools in one turn; reads that do not need approval run in parallel.",
     "- Use read_terminal to see what is currently on the user's terminal (recent commands and output) when it helps you understand their context or an error they hit.",
+    "- Terminal access is controlled by the user's current setting and may change during the run. Off refuses read_terminal; ask requires the user's approval for every read, even when command auto-approval is enabled; auto allows direct reads. Explicitly attached terminal context is already user-selected.",
     "- Use relative paths from the working directory when natural.",
     "- run_command is for one-shot, non-interactive commands that exit on their own (builds, tests, git, ls, grep). It is force-killed after a timeout, so never use it for REPLs, editors, pagers, or anything long-running. Append flags like --no-pager or pipe to cat where needed.",
     "- For anything that stays alive (dev servers, watchers: `npm run dev`, `vite`, `tail -f`), use start_server instead, then read_output to inspect its logs.",
@@ -291,7 +292,7 @@ export interface AgentCallbacks {
   onToolCall: (call: ToolCall) => void;
   /** A tool finished; `result` is what the model will see. */
   onToolResult: (id: string, result: string) => void;
-  /** Ask the user to approve a destructive tool call; resolve true to run it. */
+  /** Ask the user to approve a tool call; resolve true to run it. */
   requestApproval: (call: ToolCall) => Promise<boolean>;
   onError: (message: string) => void;
 }
@@ -300,6 +301,8 @@ export interface AgentOptions {
   provider: ProviderConfig;
   cwd: string;
   autoApprove: boolean;
+  /** Supplied as a live getter by the manager so changes apply during a run. */
+  terminalContextAccess: TerminalContextAccess;
   /** Set true to stop the loop after the current step. */
   shouldStop: () => boolean;
   /** This agent's identity, when part of a multi-agent session. Enables the
@@ -313,8 +316,10 @@ export interface AgentOptions {
   spawnAgent?: (name: string, task: string) => string | null;
   /** Drain messages delivered to this agent since the last check. */
   drainInbox?: () => InboxMessage[];
-  /** Read the user's active terminal buffer (recent output + scrollback). */
-  readTerminal?: (lines?: number) => string | null;
+  /** Identify the terminal targeted before a gated read is requested. */
+  terminalTarget?: () => number | null;
+  /** Read a terminal buffer (recent output + scrollback), optionally bound to a pane id. */
+  readTerminal?: (lines?: number, pane?: number | null) => string | null;
   /** Approximate token budget for the model-facing transcript before it is
    *  compacted. 0 (or undefined) disables compaction. */
   maxContextTokens?: number;
@@ -413,8 +418,28 @@ async function executeTool(
         );
       }
       case "read_terminal": {
+        const refused =
+          "Error: Terminal context access is off. The user can attach context in the AI composer or change Settings → General → AI terminal context.";
+        // Bind the pane before approval so focusing another pane while the
+        // prompt is open cannot change what the user approved.
+        const target = opts.terminalTarget?.() ?? null;
+        const access = opts.terminalContextAccess;
+        if (access !== "ask" && access !== "auto") return refused;
+        if (access === "ask") {
+          const approvalCall: ToolCall = {
+            ...call,
+            arguments: JSON.stringify({ ...args, pane: target ?? "unavailable" }),
+          };
+          const ok = await cb.requestApproval(approvalCall);
+          if (!ok) return "The user denied this terminal read.";
+          if (opts.shouldStop()) return "Stopped by the user.";
+          if (opts.terminalContextAccess === "off") return refused;
+        }
         const n = Number(args.lines);
-        const text = opts.readTerminal?.(Number.isFinite(n) && n > 0 ? n : undefined) ?? null;
+        const text = opts.readTerminal?.(
+          Number.isFinite(n) && n > 0 ? n : undefined,
+          target,
+        ) ?? null;
         if (text == null) return "No active terminal is available.";
         const trimmed = text.trim();
         return trimmed ? truncate(trimmed) : "(the terminal is currently empty)";
@@ -571,10 +596,9 @@ export async function runAgent(
       break;
     }
 
-    // Execute this turn's tools. Read-only calls run concurrently (they never
-    // prompt for approval, so they can't collide on the single approval slot);
-    // everything else runs sequentially so writes/commands stay ordered and
-    // approvals are requested one at a time. Results are recorded by id and
+    // Read-only calls that cannot prompt run concurrently; other tools run
+    // sequentially to keep writes ordered and request approvals one at a time.
+    // Results are recorded by id and
     // appended in the model's original call order so the transcript reads
     // naturally regardless of completion order.
     const results = new Map<string, string>();
@@ -586,8 +610,11 @@ export async function runAgent(
       cb.onToolResult(call.id, result);
     };
 
-    const parallel = toolCalls.filter((c) => READ_ONLY.has(c.name));
-    const serial = toolCalls.filter((c) => !READ_ONLY.has(c.name));
+    const canRunInParallel = (call: ToolCall) =>
+      READ_ONLY.has(call.name) &&
+      !(call.name === "read_terminal" && opts.terminalContextAccess === "ask");
+    const parallel = toolCalls.filter(canRunInParallel);
+    const serial = toolCalls.filter((call) => !canRunInParallel(call));
     if (parallel.length) await Promise.all(parallel.map(runOne));
     for (const call of serial) await runOne(call);
 

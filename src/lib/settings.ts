@@ -33,6 +33,8 @@ export interface Settings {
   sshHosts: SshHost[];
   /** Inject the `rt` shell function so meta commands work from the terminal. */
   shellIntegration: boolean;
+  /** Whether model-driven read_terminal calls are refused, approved, or automatic. */
+  terminalContextAccess: TerminalContextAccess;
   /** Auto-save the file editor after edits stop (debounced). */
   autosave: boolean;
   /** Debounce delay (ms) before an autosave fires. */
@@ -49,6 +51,7 @@ export interface Settings {
 }
 
 export type LinkOpenBehavior = "rune" | "external" | "ask";
+export type TerminalContextAccess = "off" | "ask" | "auto";
 
 /** A saved command the user can re-run from the palette. */
 export interface Snippet {
@@ -380,6 +383,7 @@ export const DEFAULT_SETTINGS: Settings = {
   snippets: [],
   sshHosts: [],
   shellIntegration: true,
+  terminalContextAccess: "off",
   autosave: false,
   autosaveDelayMs: 1000,
   tidyOnSave: false,
@@ -393,7 +397,15 @@ const KEY = "rustterm.settings";
 export function loadSettings(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const access = parsed.terminalContextAccess;
+      return {
+        ...DEFAULT_SETTINGS,
+        ...parsed,
+        terminalContextAccess: access === "ask" || access === "auto" ? access : "off",
+      };
+    }
   } catch {
     /* ignore corrupt settings */
   }

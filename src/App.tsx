@@ -2002,8 +2002,20 @@ export default function App() {
             config={aiConfig}
             cwd={root}
             width={aiWidth}
-            readTerminal={(lines) =>
-              handles.current.get(focusedPane)?.getBuffer(lines) ?? null
+            terminalContextAccess={settings.terminalContextAccess}
+            readTerminal={(lines, pane) => {
+              const target = pane ?? focusedPane;
+              return browserPanes[target]
+                ? null
+                : handles.current.get(target)?.getBuffer(lines) ?? null;
+            }}
+            terminalTarget={() =>
+              browserPanes[focusedPane] ? null : focusedPane
+            }
+            readTerminalContext={(request) =>
+              browserPanes[focusedPane]
+                ? null
+                : handles.current.get(focusedPane)?.getContext(request) ?? null
             }
             hidden={!showAi || zen}
             onClose={() => setShowAi(false)}

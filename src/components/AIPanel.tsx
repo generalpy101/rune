@@ -4,6 +4,15 @@ import { type AiConfig, aiReady } from "../lib/ai/config";
 import { useAgents } from "../lib/ai/manager";
 import type { Item } from "../lib/ai/items";
 import type { ToolCall } from "../lib/ai/types";
+import type { TerminalContextAccess } from "../lib/settings";
+import {
+  DEFAULT_TERMINAL_CONTEXT_LINES,
+  MAX_TERMINAL_CONTEXT_LINES,
+  terminalContextLabel,
+  withTerminalContext,
+  type TerminalContext,
+  type TerminalContextRequest,
+} from "../lib/ai/terminal-context";
 import { renderMarkdown } from "../lib/markdown";
 import {
   diffLines,
@@ -26,8 +35,13 @@ interface Props {
   config: AiConfig;
   /** Working directory of the focused pane — the agents' command context. */
   cwd: string;
-  /** Read the active terminal's recent output/scrollback, for agent context. */
-  readTerminal?: (lines?: number) => string | null;
+  /** Read a terminal's recent output/scrollback, for agent context. */
+  readTerminal?: (lines?: number, pane?: number | null) => string | null;
+  /** Identify the focused terminal before a gated read is requested. */
+  terminalTarget?: () => number | null;
+  terminalContextAccess: TerminalContextAccess;
+  /** Capture an explicit composer attachment from the focused terminal. */
+  readTerminalContext?: (request: TerminalContextRequest) => TerminalContext | null;
   /** When true the panel is kept mounted but visually hidden, so in-flight
    *  agent runs (and their transcripts) survive closing the panel. */
   hidden?: boolean;
@@ -42,6 +56,7 @@ const TOOL_LABEL: Record<string, string> = {
   run_command: "run",
   start_server: "server",
   read_output: "logs",
+  read_terminal: "terminal",
   read_file: "read",
   write_file: "write",
   edit_file: "edit",
@@ -56,6 +71,7 @@ const TOOL_VERB: Record<string, string> = {
   run_command: "Running",
   start_server: "Starting server",
   read_output: "Reading output",
+  read_terminal: "Reading terminal",
   read_file: "Reading",
   write_file: "Writing",
   edit_file: "Editing",
@@ -79,6 +95,12 @@ function toolSummary(call: ToolCall): string {
       return String(args.command ?? "");
     case "read_output":
       return String(args.id ?? "");
+    case "read_terminal": {
+      const n = Number(args.lines);
+      const lines = Number.isFinite(n) && n > 0 ? n : DEFAULT_TERMINAL_CONTEXT_LINES;
+      const pane = typeof args.pane === "number" ? ` from pane ${args.pane}` : "";
+      return `Last ${lines} lines${pane}`;
+    }
     case "read_file":
     case "list_dir":
     case "write_file":
@@ -191,6 +213,9 @@ export function AIPanel({
   config,
   cwd,
   readTerminal,
+  terminalTarget,
+  terminalContextAccess,
+  readTerminalContext,
   hidden,
   width,
   onClose,
@@ -210,10 +235,87 @@ export function AIPanel({
     toggleTool,
     registerStreamSink,
     anyRunning,
-  } = useAgents(config, cwd, readTerminal);
+  } = useAgents(
+    config,
+    cwd,
+    readTerminal,
+    terminalContextAccess,
+    terminalTarget,
+  );
 
   const [input, setInput] = useState("");
+  const [attachment, setAttachment] = useState<{
+    agentId: string;
+    context: TerminalContext;
+  } | null>(null);
+  const attachedContext =
+    attachment?.agentId === selectedId ? attachment.context : null;
+  const [contextMenu, setContextMenu] = useState<{
+    selection: TerminalContext | null;
+  } | null>(null);
+  const [contextError, setContextError] = useState<string | null>(null);
+  const [lastLines, setLastLines] = useState(String(DEFAULT_TERMINAL_CONTEXT_LINES));
+  const lineCount = Number(lastLines);
+  const validLineCount =
+    Number.isInteger(lineCount) &&
+    lineCount >= 1 &&
+    lineCount <= MAX_TERMINAL_CONTEXT_LINES;
+  const contextControlRef = useRef<HTMLDivElement>(null);
+  const contextButtonRef = useRef<HTMLButtonElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const ready = aiReady(config);
+
+  useEffect(() => {
+    setAttachment(null);
+    setContextMenu(null);
+    setContextError(null);
+  }, [selectedId]);
+
+  useEffect(() => {
+    if (hidden) setContextMenu(null);
+  }, [hidden]);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    contextControlRef.current
+      ?.querySelector<HTMLButtonElement>(".ai-context-menu button:not(:disabled)")
+      ?.focus();
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.target instanceof Node && !contextControlRef.current?.contains(e.target))
+        setContextMenu(null);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setContextMenu(null);
+        contextButtonRef.current?.focus();
+      }
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown, true);
+    };
+  }, [contextMenu]);
+
+  const attachContext = (request: TerminalContextRequest) => {
+    const context = request.kind === "selection"
+      ? contextMenu?.selection ?? null
+      : readTerminalContext?.(request) ?? null;
+    setContextMenu(null);
+    if (!context) {
+      setContextError(
+        "No terminal text is available for this source. Focus a terminal with output and try again.",
+      );
+      contextButtonRef.current?.focus();
+      return;
+    }
+    setAttachment({ agentId: selectedId, context });
+    setContextError(null);
+    inputRef.current?.focus();
+  };
 
   // --- Live streaming paint (bounded to the selected agent) ----------------
   const liveAccum = useRef("");
@@ -222,7 +324,6 @@ export function AIPanel({
   const lastScroll = useRef(0);
   const streamElRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const streamingItemId = selected?.streamingItemId ?? null;
 
@@ -278,9 +379,13 @@ export function AIPanel({
   }, [selectedId, selected?.items.length]);
 
   const submit = () => {
-    const text = input.trim();
-    if (!text) return;
+    const request = input.trim();
+    if (!request) return;
+    const text = withTerminalContext(request, attachedContext);
     setInput("");
+    setAttachment(null);
+    setContextMenu(null);
+    setContextError(null);
     if (selectedId && selected) send(selectedId, text);
     else start(text);
   };
@@ -393,7 +498,11 @@ export function AIPanel({
         {it.awaiting && (
           <div className="ai-approve">
             <span>
-              {diff ? "Apply this change?" : "Approve this action?"}
+              {diff
+                ? "Apply this change?"
+                : it.call.name === "read_terminal"
+                  ? "Allow this terminal read?"
+                  : "Approve this action?"}
             </span>
             <button className="primary" onClick={() => resolveApproval(selectedId, true)}>
               {diff ? "Apply" : "Approve"}
@@ -530,39 +639,147 @@ export function AIPanel({
             </div>
           )}
 
-          <div className="ai-input">
-            <textarea
-              ref={inputRef}
-              rows={2}
-              placeholder={
-                selectedId
-                  ? selected?.running
-                    ? "Send a message to this agent…"
-                    : "Continue this task…"
-                  : "Describe a task to start a new agent…"
-              }
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  submit();
-                }
-              }}
-            />
-            {selected?.running ? (
-              <button className="ai-send stop" onClick={() => stop(selectedId)}>
-                Stop
-              </button>
-            ) : (
+          <div className="ai-composer">
+            <div className="ai-context-control" ref={contextControlRef}>
               <button
-                className="ai-send primary"
-                onClick={submit}
-                disabled={!input.trim()}
+                ref={contextButtonRef}
+                className="ai-context-button"
+                aria-expanded={contextMenu !== null}
+                aria-controls="ai-terminal-context-menu"
+                onClick={() => {
+                  setContextError(null);
+                  setContextMenu(contextMenu ? null : {
+                    selection: readTerminalContext?.({ kind: "selection" }) ?? null,
+                  });
+                }}
               >
-                {selectedId ? "Send" : "Start"}
+                <IconPlus size={13} /> Context <IconChevronDown size={12} />
               </button>
+              {contextMenu && (
+                <div
+                  id="ai-terminal-context-menu"
+                  className="ai-context-menu"
+                  role="group"
+                  aria-label="Attach terminal context"
+                >
+                  <button onClick={() => attachContext({ kind: "last-command" })}>
+                    Last command
+                  </button>
+                  <button
+                    disabled={!contextMenu.selection}
+                    title={contextMenu.selection ? "Attach selected terminal text" : "Select text in the terminal first"}
+                    onClick={() => attachContext({ kind: "selection" })}
+                  >
+                    Selection
+                    {!contextMenu.selection && <small>Select terminal text first</small>}
+                  </button>
+                  <button onClick={() => attachContext({ kind: "visible-screen" })}>
+                    Visible screen
+                  </button>
+                  <label htmlFor="ai-terminal-context-lines">Last N lines</label>
+                  <div className="ai-context-lines">
+                    <input
+                      id="ai-terminal-context-lines"
+                      type="number"
+                      min={1}
+                      max={MAX_TERMINAL_CONTEXT_LINES}
+                      step={1}
+                      value={lastLines}
+                      aria-invalid={!validLineCount}
+                      onChange={(e) => setLastLines(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && validLineCount) {
+                          e.preventDefault();
+                          attachContext({ kind: "last-lines", lines: lineCount });
+                        }
+                      }}
+                    />
+                    <button
+                      disabled={!validLineCount}
+                      onClick={() => attachContext({ kind: "last-lines", lines: lineCount })}
+                    >
+                      Attach
+                    </button>
+                  </div>
+                  <p>1–{MAX_TERMINAL_CONTEXT_LINES.toLocaleString()} lines. Replaces the current attachment.</p>
+                </div>
+              )}
+            </div>
+            {attachedContext && (
+              <div className="ai-context-attachment">
+                <div className="ai-context-chip">
+                  <span>
+                    <strong>{terminalContextLabel(attachedContext.source)}</strong>
+                    <span>
+                      {attachedContext.lineCount.toLocaleString()} lines · ~{attachedContext.estimatedTokens.toLocaleString()} tokens
+                      {attachedContext.truncated && <em> · truncated</em>}
+                    </span>
+                  </span>
+                  <button
+                    className="icon-btn"
+                    title="Remove terminal context"
+                    aria-label="Remove terminal context"
+                    onClick={() => setAttachment(null)}
+                  >
+                    <IconClose size={13} />
+                  </button>
+                </div>
+                <details className="ai-context-preview">
+                  <summary>Preview attached context</summary>
+                  {attachedContext.source.kind === "last-command" && (
+                    <p>
+                      Last known cwd: {attachedContext.source.cwd ?? "unknown"}.{" "}
+                      {attachedContext.source.running
+                        ? "Command still running at capture."
+                        : `Exit status: ${attachedContext.source.exitCode ?? "unknown"}.`}
+                      {" "}Command text is the displayed line and may include the shell prompt.
+                    </p>
+                  )}
+                  {attachedContext.truncated && (
+                    <p>
+                      The middle was omitted from {attachedContext.originalLineCount.toLocaleString()} original lines.
+                      The head and tail are kept.
+                    </p>
+                  )}
+                  <pre>{attachedContext.text}</pre>
+                </details>
+              </div>
             )}
+            {contextError && <p className="ai-context-error" role="status">{contextError}</p>}
+            <div className="ai-input">
+              <textarea
+                ref={inputRef}
+                rows={2}
+                placeholder={
+                  selectedId
+                    ? selected?.running
+                      ? "Send a message to this agent…"
+                      : "Continue this task…"
+                    : "Describe a task to start a new agent…"
+                }
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    submit();
+                  }
+                }}
+              />
+              {selected?.running ? (
+                <button className="ai-send stop" onClick={() => stop(selectedId)}>
+                  Stop
+                </button>
+              ) : (
+                <button
+                  className="ai-send primary"
+                  onClick={submit}
+                  disabled={!input.trim()}
+                >
+                  {selectedId ? "Send" : "Start"}
+                </button>
+              )}
+            </div>
           </div>
         </>
       )}

@@ -2337,14 +2337,145 @@ button:hover {
   color: var(--muted);
 }
 
-.ai-input {
-  display: flex;
-  gap: 6px;
+.ai-composer {
+  flex: 0 0 auto;
   padding: 8px;
   border-top: 1px solid var(--border);
 }
+.ai-context-control {
+  position: relative;
+  margin-bottom: 6px;
+}
+.ai-context-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 7px;
+  font-size: 12px;
+}
+.ai-context-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  width: min(270px, calc(100vw - 40px));
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.ai-context-menu > button {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  text-align: left;
+  font-size: 12px;
+}
+.ai-context-menu button:disabled {
+  color: var(--muted);
+  opacity: 0.6;
+  cursor: default;
+}
+.ai-context-menu small,
+.ai-context-menu p {
+  color: var(--muted);
+  font-size: 11px;
+}
+.ai-context-menu p {
+  margin: 6px 8px 2px;
+}
+.ai-context-menu label {
+  display: block;
+  margin: 5px 8px;
+  font-size: 12px;
+}
+.ai-context-lines {
+  display: flex;
+  gap: 6px;
+  margin: 0 8px;
+}
+.ai-context-lines input {
+  flex: 1;
+  min-width: 0;
+  width: 90px;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+.ai-context-lines button {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.ai-context-attachment {
+  margin-bottom: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+}
+.ai-context-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+}
+.ai-context-chip > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ai-context-chip strong,
+.ai-context-chip > span > span {
+  display: block;
+}
+.ai-context-chip strong {
+  font-weight: 600;
+}
+.ai-context-chip > span > span,
+.ai-context-preview {
+  color: var(--muted);
+}
+.ai-context-chip em {
+  color: var(--warning);
+  font-style: normal;
+}
+.ai-context-preview {
+  margin-top: 5px;
+  font-size: 11px;
+}
+.ai-context-preview summary {
+  cursor: pointer;
+}
+.ai-context-preview p {
+  margin: 5px 0;
+  overflow-wrap: anywhere;
+}
+.ai-context-preview pre {
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  user-select: text;
+  -webkit-user-select: text;
+}
+.ai-context-error {
+  margin: 0 0 6px;
+  color: var(--warning);
+  font-size: 12px;
+}
+.ai-input {
+  display: flex;
+  gap: 6px;
+}
 .ai-input textarea {
   flex: 1;
+  min-width: 0;
   resize: none;
   background: var(--panel);
   color: var(--text);
