@@ -14,6 +14,7 @@ import {
 } from "../lib/fs";
 import { promptDialog, confirmDialog, alertDialog } from "../lib/dialogs";
 import { FileIcon } from "../lib/fileIcons";
+import { isMacProtectedHomePath } from "../lib/privacy";
 import {
   IconArrowUp,
   IconNewFile,
@@ -77,6 +78,7 @@ function dirDirty(dir: string, git: GitStatus): boolean {
 
 interface Props {
   rootPath: string;
+  home: string | null;
   onNavigateRoot: (path: string) => void;
   onOpenFile: (path: string) => void;
   onCdHere: (path: string) => void;
@@ -118,6 +120,7 @@ function join(dir: string, name: string): string {
 
 export function FileBrowser({
   rootPath,
+  home,
   onNavigateRoot,
   onOpenFile,
   onCdHere,
@@ -138,6 +141,7 @@ export function FileBrowser({
   const [clip, setClip] = useState<Clip | null>(null);
   const [filter, setFilter] = useState("");
   const [showFilter, setShowFilter] = useState(false);
+  const protectedRoot = home ? isMacProtectedHomePath(rootPath, home) : false;
 
   // Paste the clipboard entry into `destDir` (copy, or move when it was cut).
   const pasteInto = useCallback(
@@ -180,7 +184,8 @@ export function FileBrowser({
     onDiff,
   };
 
-  const reload = useCallback(() => {
+  const reload = useCallback((automatic = false) => {
+    if (automatic && protectedRoot) return;
     listDir(rootPath)
       .then((e) => {
         setEntries(e);
@@ -190,15 +195,15 @@ export function FileBrowser({
     gitStatus(rootPath)
       .then(setGit)
       .catch(() => setGit({}));
-  }, [rootPath]);
+  }, [protectedRoot, rootPath]);
 
   // Reload on mount/root change, then keep the top level fresh: poll on an
   // interval and whenever the window regains focus, so changes made by agents,
   // the terminal, or other apps show up without a manual refresh.
   useEffect(() => {
     reload();
-    const timer = setInterval(reload, 2500);
-    const onFocus = () => reload();
+    const timer = setInterval(() => reload(true), 2500);
+    const onFocus = () => reload(true);
     window.addEventListener("focus", onFocus);
     return () => {
       clearInterval(timer);
@@ -279,7 +284,11 @@ export function FileBrowser({
         >
           <IconFilter size={15} />
         </button>
-        <button className="fb-tool icon-btn" title="Refresh" onClick={reload}>
+        <button
+          className="fb-tool icon-btn"
+          title="Refresh"
+          onClick={() => reload()}
+        >
           <IconRefresh size={15} />
         </button>
       </div>
@@ -384,6 +393,7 @@ export function FileBrowser({
               onReveal={onReveal}
               onNewTerminalHere={onNewTerminalHere}
               onParentReload={reload}
+              home={home}
             />
           ))}
       </div>
@@ -402,6 +412,7 @@ interface NodeProps {
   onReveal: (path: string) => void;
   onNewTerminalHere: (path: string) => void;
   onParentReload: () => void;
+  home: string | null;
 }
 
 function TreeNode({
@@ -415,21 +426,27 @@ function TreeNode({
   onReveal,
   onNewTerminalHere,
   onParentReload,
+  home,
 }: NodeProps) {
   const [open, setOpen] = useState(false);
   const [children, setChildren] = useState<DirEntry[] | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
 
-  const loadChildren = useCallback(() => {
+  const protectedEntry = home ? isMacProtectedHomePath(entry.path, home) : false;
+
+  const loadChildren = useCallback((automatic = false) => {
+    if (automatic && protectedEntry) return;
     listDir(entry.path)
       .then(setChildren)
-      .catch((e) => alertDialog(String(e)));
-  }, [entry.path]);
+      .catch((e) => {
+        if (!automatic) void alertDialog(String(e));
+      });
+  }, [entry.path, protectedEntry]);
 
   // While expanded, keep this folder's children in sync with disk.
   useEffect(() => {
     if (!open || !entry.is_dir) return;
-    const timer = setInterval(loadChildren, 3000);
+    const timer = setInterval(() => loadChildren(true), 3000);
     return () => clearInterval(timer);
   }, [open, entry.is_dir, loadChildren]);
 
@@ -438,7 +455,9 @@ function TreeNode({
       onOpenFile(entry.path);
       return;
     }
-    if (!open && children === null) loadChildren();
+    // Expanding is an explicit gesture: refresh cached children instead of
+    // relying on polling (protected folders intentionally skip polling).
+    if (!open) loadChildren();
     setOpen((o) => !o);
   };
 
@@ -595,6 +614,7 @@ function TreeNode({
               onReveal={onReveal}
               onNewTerminalHere={onNewTerminalHere}
               onParentReload={loadChildren}
+              home={home}
             />
           ))}
     </div>

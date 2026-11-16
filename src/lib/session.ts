@@ -44,6 +44,8 @@ export interface PersistedSession {
   activeTab: number;
   focusedPane: number;
   leftWidth: number;
+  /** Width of the AI assistant panel (undefined = default width). */
+  aiWidth?: number;
   root: string;
   /** @deprecated single open file; replaced by `openItems`. Read for migration. */
   preview?: string | null;
