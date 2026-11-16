@@ -9,6 +9,7 @@
  */
 import type { PaneNode } from "./layout";
 import { leafIds } from "./layout";
+import { isWebUrl, type BrowserPaneState } from "./browser";
 
 /** A named group of tabs (à la tmux/cmux). Each tab belongs to exactly one
  *  workspace; switching workspaces swaps the visible tab set while every
@@ -57,6 +58,9 @@ export interface PersistedSession {
   sidebarOpen?: boolean;
   /** pane id -> last known cwd */
   paneCwd: Record<number, string>;
+  /** Leaf ids that are browser panes -> their URL/title (undefined = none,
+   *  e.g. sessions saved before browser panes existed). */
+  browserPanes?: Record<number, BrowserPaneState>;
   /** Named workspaces (undefined/empty = a single implicit default workspace). */
   workspaces?: Workspace[];
   /** Currently selected workspace id. */
@@ -101,16 +105,34 @@ export function nextIdFor(session: PersistedSession): number {
   return max + 1;
 }
 
-/** Drop cwd entries for panes that no longer exist in any tab. */
-export function pruneCwd(
+/** Drop per-pane entries (cwds, browser panes) for panes that no longer
+ *  exist in any tab. */
+export function pruneToLeaves<T>(
   tabs: PersistedTab[],
-  paneCwd: Record<number, string>,
-): Record<number, string> {
+  byPane: Record<number, T>,
+): Record<number, T> {
   const live = new Set<number>();
   for (const t of tabs) for (const id of leafIds(t.layout)) live.add(id);
-  const out: Record<number, string> = {};
-  for (const k in paneCwd) {
-    if (live.has(Number(k))) out[Number(k)] = paneCwd[k];
+  const out: Record<number, T> = {};
+  for (const k in byPane) {
+    if (live.has(Number(k))) out[Number(k)] = byPane[k];
+  }
+  return out;
+}
+
+/** Browser panes from a saved session, keeping only well-formed http(s)
+ *  entries or blank (new-tab) ones; the Rust side refuses anything else. */
+export function loadBrowserPanes(
+  session: PersistedSession | null,
+): Record<number, BrowserPaneState> {
+  const out: Record<number, BrowserPaneState> = {};
+  for (const [k, v] of Object.entries(session?.browserPanes ?? {})) {
+    if (v && typeof v.url === "string" && (v.url === "" || isWebUrl(v.url))) {
+      out[Number(k)] = {
+        url: v.url,
+        title: typeof v.title === "string" ? v.title : undefined,
+      };
+    }
   }
   return out;
 }

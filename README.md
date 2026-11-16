@@ -28,6 +28,7 @@ can be when the shell, the editor, and an agent all live in one window.
 - **Integrated file browser** — live **git status** badges, fuzzy quick-open, reveal-in-Finder, and full file operations (create, rename, move, copy, duplicate, delete).
 - **Built-in code editor** — [CodeMirror 6](https://codemirror.net/) with syntax highlighting for Rust, JS/TS, Python, Go, Java, C/C++, PHP, HTML, CSS, JSON, SQL, XML, YAML, Markdown and more.
 - **AI assistant** — bring your own API key or connect a **local model** (Ollama / LM Studio). An optional agent can run shell commands with an approval gate, a token budget, and a step cap to keep it on a leash.
+- **Browser tabs** — the globe button opens a browser tab, and `⌘`-clicking a link in the terminal opens it in one (or in your default browser — your choice in Settings). Uses the OS webview, not a bundled Chromium; can import Chrome bookmarks and, best effort, Chrome cookies.
 - **Activity monitor** — see running tasks and **listening ports** at a glance, and kill a process straight from the panel.
 - **Themes** — ship-with themes plus import from `.terminal` / `.itermcolors` files, create your own, and export the current theme.
 - **Snippets & SSH hosts** — save reusable commands and SSH targets, launch them from the command palette or the `rt` shell helper.
@@ -111,6 +112,7 @@ Open the command palette to discover every action and its shortcut. Some of the 
 | `⌘B` | Toggle file browser |
 | `⌘F` | Search scrollback |
 | `⌘K` | Clear terminal |
+| `⌘`-click a link | Open it (in Rune, externally, or ask — see Settings → Browser) |
 | `⌘+` / `⌘-` / `⌘0` | Increase / decrease / reset font size |
 
 > Shortcuts shown for macOS; use `Ctrl` in place of `⌘` on Linux/Windows.
