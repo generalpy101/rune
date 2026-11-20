@@ -15,6 +15,7 @@ import { cancelChat, cancelCommand } from "./client";
 import { type AiConfig, activeProvider } from "./config";
 import { type Item, itemsFromMessages } from "./items";
 import type { ChatMessage } from "./types";
+import type { TerminalContextAccess } from "../settings";
 
 export type AgentStatus = "running" | "done" | "error" | "stopped";
 
@@ -154,7 +155,9 @@ export interface UseAgents {
 export function useAgents(
   config: AiConfig,
   cwd: string,
-  readTerminal?: (lines?: number) => string | null,
+  readTerminal?: (lines?: number, pane?: number | null) => string | null,
+  terminalContextAccess: TerminalContextAccess = "off",
+  terminalTarget?: () => number | null,
 ): UseAgents {
   // One-time restore of persisted sessions, computed before the hooks that
   // depend on the initial selection. `boot` is a plain ref guard (not a hook
@@ -179,6 +182,10 @@ export function useAgents(
   // without forcing makeOpts to re-create on every focus change.
   const readTerminalRef = useRef(readTerminal);
   readTerminalRef.current = readTerminal;
+  const terminalTargetRef = useRef(terminalTarget);
+  terminalTargetRef.current = terminalTarget;
+  const terminalContextAccessRef = useRef(terminalContextAccess);
+  terminalContextAccessRef.current = terminalContextAccess;
 
   const [, setTick] = useState(0);
   const [selectedId, setSelectedId] = useState(boot.current.first);
@@ -334,6 +341,9 @@ export function useAgents(
       provider: activeProvider(config)!,
       cwd,
       autoApprove: config.autoApprove,
+      get terminalContextAccess() {
+        return terminalContextAccessRef.current;
+      },
       shouldStop: () => s.stop,
       self: { id: s.id, name: s.name },
       peers: () =>
@@ -357,7 +367,8 @@ export function useAgents(
         s.inbox = [];
         return m;
       },
-      readTerminal: (lines) => readTerminalRef.current?.(lines) ?? null,
+      terminalTarget: () => terminalTargetRef.current?.() ?? null,
+      readTerminal: (lines, pane) => readTerminalRef.current?.(lines, pane) ?? null,
       maxContextTokens: config.autoCompact ? config.maxContextTokens : 0,
       maxSteps: config.maxSteps,
     }),

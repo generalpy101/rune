@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Terminal, type IMarker, type IDecoration } from "@xterm/xterm";
+import { Terminal, type IBuffer, type IMarker, type IDecoration } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -27,6 +27,13 @@ import { notify } from "../lib/fs";
 import { resolveTheme, type Settings } from "../lib/settings";
 import { META_OSC } from "../lib/meta";
 import { ContextMenu } from "./ContextMenu";
+import {
+  createTerminalContext,
+  DEFAULT_TERMINAL_CONTEXT_LINES,
+  terminalContextLineLimit,
+  type TerminalContext,
+  type TerminalContextRequest,
+} from "../lib/ai/terminal-context";
 
 /** Tokens in terminal output that look like file paths: either something with
  *  slashes (absolute or relative) or a bare `name.ext` with a known extension. */
@@ -45,6 +52,26 @@ function resolvePath(token: string, cwd: string | null): string | null {
   return `${cwd.replace(/\/$/, "")}/${t}`;
 }
 
+function bufferText(
+  buffer: IBuffer,
+  start: number,
+  end: number,
+  startColumn = 0,
+  endColumn?: number,
+): string {
+  const lines: string[] = [];
+  for (let i = Math.max(0, start); i < Math.min(end, buffer.length); i++) {
+    const line = buffer.getLine(i);
+    lines.push(line?.translateToString(
+      true,
+      i === start ? startColumn : 0,
+      i === end - 1 ? endColumn : undefined,
+    ) ?? "");
+  }
+  while (lines.length && lines[lines.length - 1] === "") lines.pop();
+  return lines.join("\n");
+}
+
 export interface TerminalHandle {
   /** Write text into the shell (e.g. a `cd` command), then focus. */
   sendText: (text: string) => void;
@@ -59,6 +86,8 @@ export interface TerminalHandle {
   /** Snapshot of the terminal's visible buffer + scrollback as plain text
    *  (last `maxLines` non-empty-trimmed rows), for AI agent context. */
   getBuffer: (maxLines?: number) => string;
+  /** Capture only the scope explicitly chosen in the AI composer. */
+  getContext: (request: TerminalContextRequest) => TerminalContext | null;
   /** Last-polled "a foreground command is running" state (for confirm-close). */
   isBusy: () => boolean;
   /** Scroll to the previous (-1) or next (1) shell prompt, using OSC 133
@@ -75,6 +104,10 @@ interface CmdBlock {
   el: HTMLElement | null;
   running: boolean;
   exitCode: number | null;
+  commandLine: IMarker | null;
+  outputStart: { marker: IMarker; column: number } | null;
+  outputEnd: { marker: IMarker; column: number } | null;
+  cwd: string | null;
   /** Monotonic creation index — used for stable alternating band tint. */
   idx: number;
   /** Transient highlight after a ⌘↑/⌘↓ jump, so the user sees where they landed. */
@@ -151,6 +184,8 @@ export const TerminalPane = forwardRef<TerminalHandle, Props>(
     const ptyIdRef = useRef<number | null>(null);
     const mountedRef = useRef(false);
     const lastCwdRef = useRef<string | null>(null);
+    const cwdRef = useRef(cwd);
+    cwdRef.current = cwd;
     const busyRef = useRef(false);
     const busySinceRef = useRef<number | null>(null);
     // OSC 133 command blocks (most-recent last) and the block awaiting C/D.
@@ -272,15 +307,84 @@ export const TerminalPane = forwardRef<TerminalHandle, Props>(
         const term = termRef.current;
         if (!term) return "";
         const buf = term.buffer.active;
-        const total = buf.length;
-        const start = Math.max(0, total - maxLines);
-        const lines: string[] = [];
-        for (let i = start; i < total; i++) {
-          const line = buf.getLine(i);
-          lines.push(line ? line.translateToString(true) : "");
+        return bufferText(buf, Math.max(0, buf.length - maxLines), buf.length);
+      },
+      getContext: (request: TerminalContextRequest) => {
+        const term = termRef.current;
+        if (!term) return null;
+        const buf = term.buffer.active;
+        const trailingLines = (lines: number) => {
+          let end = buf.length;
+          while (end > 0 && !buf.getLine(end - 1)?.translateToString(true)) end--;
+          return bufferText(buf, Math.max(0, end - lines), end);
+        };
+        switch (request.kind) {
+          case "selection":
+            return createTerminalContext({ kind: "selection" }, term.getSelection());
+          case "visible-screen":
+            return createTerminalContext(
+              { kind: "visible-screen" },
+              bufferText(buf, buf.viewportY, buf.viewportY + term.rows),
+            );
+          case "last-lines": {
+            const lines = terminalContextLineLimit(request.lines);
+            return createTerminalContext(
+              { kind: "last-lines", lines },
+              trailingLines(lines),
+            );
+          }
+          case "last-command": {
+            // Full-screen apps use the alternate buffer; there is no command
+            // block to describe, so return no context instead of mislabeling a TUI.
+            if (buf.type !== "normal") return null;
+            // A fresh, idle prompt is a block too. Skip it to find the last run.
+            const block = [...blocksRef.current].reverse().find((b) =>
+              !b.marker.isDisposed && b.outputStart && !b.outputStart.marker.isDisposed,
+            );
+            if (block?.outputStart) {
+              const commandLine = block.commandLine && !block.commandLine.isDisposed
+                ? block.commandLine.line
+                : block.marker.line;
+              let displayedCommandLine = buf.getLine(commandLine)?.translateToString(true) ?? "";
+              // Wrapped commands occupy continuation rows before C; include
+              // them so the model never reasons over a silently partial command.
+              for (let line = commandLine + 1; buf.getLine(line)?.isWrapped; line++) {
+                displayedCommandLine += buf.getLine(line)?.translateToString(true) ?? "";
+              }
+              const end = block.outputEnd;
+              const endLine = end && !end.marker.isDisposed
+                ? end.marker.line
+                : buf.baseY + buf.cursorY;
+              const endColumn = end && !end.marker.isDisposed ? end.column : buf.cursorX;
+              const output = bufferText(
+                buf,
+                block.outputStart.marker.line,
+                endLine + (endColumn > 0 ? 1 : 0),
+                block.outputStart.column,
+                endColumn > 0 ? endColumn : undefined,
+              );
+              const context = createTerminalContext(
+                {
+                  kind: "last-command",
+                  displayedCommandLine,
+                  cwd: block.cwd,
+                  exitCode: block.exitCode,
+                  running: block.running,
+                },
+                [displayedCommandLine, output].filter((part) => part.length > 0).join("\n"),
+              );
+              if (context) return context;
+            }
+            return createTerminalContext(
+              { kind: "last-command-fallback" },
+              trailingLines(DEFAULT_TERMINAL_CONTEXT_LINES),
+            );
+          }
+          default: {
+            const exhaustive: never = request;
+            return exhaustive;
+          }
         }
-        while (lines.length && lines[lines.length - 1] === "") lines.pop();
-        return lines.join("\n");
       },
       isBusy: () => busyRef.current,
       jumpPrompt,
@@ -414,6 +518,10 @@ export const TerminalPane = forwardRef<TerminalHandle, Props>(
             el: null,
             running: false,
             exitCode: null,
+            commandLine: null,
+            outputStart: null,
+            outputEnd: null,
+            cwd: lastCwdRef.current ?? cwdRef.current,
             idx: blockSeq++,
             flash: false,
           };
@@ -423,23 +531,40 @@ export const TerminalPane = forwardRef<TerminalHandle, Props>(
           });
           marker.onDispose(() => {
             blocksRef.current = blocksRef.current.filter((x) => x !== block);
+            block.commandLine?.dispose();
+            block.outputStart?.marker.dispose();
+            block.outputEnd?.marker.dispose();
+            if (currentBlockRef.current === block) currentBlockRef.current = null;
           });
           blocksRef.current.push(block);
           currentBlockRef.current = block;
           // A fresh prompt resets prompt-navigation to "latest".
           jumpAtRef.current = null;
           layoutBlocks(); // finalize the previous block's extent
+        } else if (kind === "B") {
+          const b = currentBlockRef.current;
+          if (b) {
+            b.commandLine?.dispose();
+            b.commandLine = term.registerMarker(0) ?? null;
+          }
         } else if (kind === "C") {
           const b = currentBlockRef.current;
           if (b) {
+            const marker = term.registerMarker(0);
+            b.outputStart?.marker.dispose();
+            b.outputStart = marker ? { marker, column: term.buffer.active.cursorX } : null;
+            b.cwd = lastCwdRef.current ?? cwdRef.current;
             b.running = true;
             layoutBlocks();
           }
         } else if (kind === "D") {
           const b = currentBlockRef.current;
           if (b) {
-            const code = rest.length ? parseInt(rest[0], 10) : 0;
-            b.exitCode = Number.isFinite(code) ? code : 0;
+            const marker = term.registerMarker(0);
+            b.outputEnd?.marker.dispose();
+            b.outputEnd = marker ? { marker, column: term.buffer.active.cursorX } : null;
+            const code = rest[0] ? Number(rest[0]) : NaN;
+            b.exitCode = Number.isInteger(code) ? code : null;
             b.running = false;
             layoutBlocks();
             // A zero-content decoration on the same marker draws the ruler tick
@@ -448,7 +573,7 @@ export const TerminalPane = forwardRef<TerminalHandle, Props>(
             const tick = term.registerDecoration({
               marker: b.marker,
               overviewRulerOptions: {
-                color: b.exitCode === 0 ? ui.success : ui.danger,
+                color: b.exitCode == null ? ui.muted : b.exitCode === 0 ? ui.success : ui.danger,
                 position: "right",
               },
             });

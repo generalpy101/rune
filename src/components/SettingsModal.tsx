@@ -469,6 +469,28 @@ function GeneralSection({
         terminals after toggling.
       </p>
 
+      <div className="theme-group-title">AI terminal context</div>
+      <label className="setting-row">
+        <span>Agent terminal access</span>
+        <select
+          value={settings.terminalContextAccess}
+          onChange={(e) => {
+            const access = e.target.value;
+            if (access === "off" || access === "ask" || access === "auto")
+              set("terminalContextAccess", access);
+          }}
+        >
+          <option value="off">Off</option>
+          <option value="ask">Ask each time</option>
+          <option value="auto">Automatic</option>
+        </select>
+      </label>
+      <p className="ai-hint">
+        Controls the assistant's <code>read_terminal</code> tool. Off refuses reads,
+        Ask requires approval for each read, and Automatic allows reads without asking.
+        Context you choose in the AI composer can always be attached.
+      </p>
+
       <div className="theme-group-title">Appearance</div>
 
       <label className="setting-row">

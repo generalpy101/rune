@@ -144,6 +144,29 @@ to the app, so it never interferes with full-screen TUI programs.
 
 ---
 
+## AI terminal context
+
+Use **Context** in the AI composer to attach the last command, selected terminal
+text, the visible screen, or the last N lines. The default is 200 lines. The chip
+shows the source, line count, estimated tokens, and any truncation. Expand the
+preview to inspect the snapshot, or remove the chip before sending. Choosing a
+new source replaces the attachment. Sending or switching tasks clears it.
+
+Last command uses existing OSC 133 shell markers for the displayed command line,
+output, last known working directory, and exit status when available. The command
+line can include the shell prompt. Without those markers, it falls back to the
+last 200 raw lines. Attachments are capped at 12,000 characters of terminal text;
+long captures retain the head and tail and disclose the omitted middle. Sent
+context becomes part of the existing conversation history and token budget.
+
+**Settings → General → AI terminal context → Agent terminal access** controls the
+model-driven `read_terminal` tool. **Off**, the default, refuses reads. **Ask each
+time** requires approval for every read, including when command auto-approval is
+enabled. **Automatic** allows reads without asking. Explicit composer attachments
+work in every mode because you choose the content before sending it.
+
+---
+
 ## 🗂️ Project structure
 
 ```text
